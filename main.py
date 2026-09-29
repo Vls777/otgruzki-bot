@@ -1580,6 +1580,19 @@ def _run_keepalive_server():
 #                          ЗАПУСК
 # ════════════════════════════════════════════════════════════
 
+def _extract_payload(event):
+    """Безопасно достаёт payload из события VK."""
+    raw = getattr(event, 'payload', None)
+    if not raw:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+
+
 def main():
     print(f"[bot] starting at {tz_now()} (UTC+{TIMEZONE_OFFSET_HOURS})")
 
@@ -1599,12 +1612,7 @@ def main():
         if event.type == VkEventType.MESSAGE_NEW and event.to_me:
             user_id = event.user_id
             upsert_user(user_id)
-            payload = None
-            if event.payload:
-                try:
-                    payload = json.loads(event.payload)
-                except (ValueError, TypeError):
-                    payload = None
+            payload = _extract_payload(event)
             if payload and payload.get('cmd'):
                 try:
                     handle_payload(user_id, payload)
