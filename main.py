@@ -1,6 +1,5 @@
 """
 VK Warehouse Bot — единый файл.
-Все настройки — в блоке НАСТРОЙКИ в начале файла.
 """
 import io
 import csv
@@ -29,9 +28,7 @@ from matplotlib.dates import DateFormatter
 plt.rcParams['font.family'] = 'DejaVu Sans'
 
 
-# ════════════════════════════════════════════════════════════
-#                        НАСТРОЙКИ
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ НАСТРОЙКИ ════════════════════════════
 
 TOKEN = os.getenv('VK_TOKEN', '').strip()
 GROUP_ID = int(os.getenv('VK_GROUP_ID', '0'))
@@ -50,9 +47,7 @@ DB_PATH = os.path.join(DATA_DIR, 'shipments.db')
 BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
 
 
-# ════════════════════════════════════════════════════════════
-#                       ЧАСОВОЙ ПОЯС
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ ЧАСОВОЙ ПОЯС ════════════════════════════
 
 TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
 
@@ -69,9 +64,7 @@ def now_iso():
     return tz_now().strftime('%Y-%m-%d %H:%M:%S')
 
 
-# ════════════════════════════════════════════════════════════
-#                      СОСТОЯНИЯ ДИАЛОГА
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ СОСТОЯНИЯ ════════════════════════════
 
 _states = {}
 
@@ -94,9 +87,7 @@ def clear_state(user_id):
     _states.pop(user_id, None)
 
 
-# ════════════════════════════════════════════════════════════
-#                        БАЗА ДАННЫХ
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ БАЗА ДАННЫХ ════════════════════════════
 
 @contextmanager
 def get_db():
@@ -347,7 +338,6 @@ def make_backup():
     stamp = tz_now().strftime('%Y-%m-%d_%H-%M-%S')
     dst = os.path.join(BACKUP_DIR, f'shipments_{stamp}.db')
     shutil.copy2(DB_PATH, dst)
-
     files = sorted(f for f in os.listdir(BACKUP_DIR) if f.startswith('shipments_'))
     for old in files[:-BACKUP_KEEP]:
         try:
@@ -362,15 +352,14 @@ def get_db_bytes():
         return f.read()
 
 
-# ════════════════════════════════════════════════════════════
-#                        КЛАВИАТУРЫ
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ КЛАВИАТУРЫ ════════════════════════════
 
 def _p(**kw):
     return json.dumps(kw, ensure_ascii=False)
 
 
 def main_menu(is_admin=False, morning_on=True):
+    """8 кнопок максимум — с запасом ниже лимита 10."""
     kb = VkKeyboard(one_time=False)
     kb.add_button('➕ Добавить погрузку', color=VkKeyboardColor.POSITIVE)
     kb.add_line()
@@ -381,10 +370,6 @@ def main_menu(is_admin=False, morning_on=True):
     kb.add_button('📊 Статистика', color=VkKeyboardColor.SECONDARY)
     kb.add_line()
     kb.add_button('📁 Клиенты', color=VkKeyboardColor.SECONDARY)
-    kb.add_button('❓ Помощь', color=VkKeyboardColor.SECONDARY)
-    kb.add_line()
-    label = '🔔 Сводка: вкл' if morning_on else '🔕 Сводка: выкл'
-    kb.add_button(label, color=VkKeyboardColor.SECONDARY)
     if is_admin:
         kb.add_button('⚙️ Настройки', color=VkKeyboardColor.SECONDARY)
     return kb.get_keyboard()
@@ -401,7 +386,8 @@ def date_choice_menu():
     return kb.get_keyboard()
 
 
-def clients_menu(clients, action='add', sid=None, page=0, per_page=6):
+def clients_menu(clients, action='add', sid=None, page=0, per_page=4):
+    """4 клиента + навигация + 1 кнопка действия + отмена = 6 рядов."""
     kb = VkKeyboard(inline=True)
     start = page * per_page
     chunk = clients[start:start + per_page]
@@ -414,24 +400,22 @@ def clients_menu(clients, action='add', sid=None, page=0, per_page=6):
                 p['sid'] = sid
         kb.add_button(c['name'][:40], color=VkKeyboardColor.SECONDARY,
                       payload=json.dumps(p, ensure_ascii=False))
-        if i % 2 == 1 and i != len(chunk) - 1:
-            kb.add_line()
+        kb.add_line()
 
     nav = []
     if page > 0:
         p = {'cmd': 'clients_page', 'action': action, 'page': page - 1}
         if sid is not None: p['sid'] = sid
-        nav.append(('⬅️', json.dumps(p, ensure_ascii=False)))
+        nav.append(('⬅️ Назад', json.dumps(p, ensure_ascii=False)))
     if start + per_page < len(clients):
         p = {'cmd': 'clients_page', 'action': action, 'page': page + 1}
         if sid is not None: p['sid'] = sid
-        nav.append(('➡️', json.dumps(p, ensure_ascii=False)))
+        nav.append(('➡️ Далее', json.dumps(p, ensure_ascii=False)))
     if nav:
-        kb.add_line()
         for label, pl in nav:
             kb.add_button(label, color=VkKeyboardColor.SECONDARY, payload=pl)
+        kb.add_line()
 
-    kb.add_line()
     if action in ('add', 'edit_client'):
         p = {'cmd': 'new_client', 'action': action}
         if sid is not None: p['sid'] = sid
@@ -488,16 +472,13 @@ def after_save_menu():
 
 
 def stats_menu():
-    """4 ряда — точно влезает в лимит ВК."""
+    """6 кнопок в 3 рядах — минимальный безопасный набор."""
     kb = VkKeyboard(inline=True)
     kb.add_button('Сегодня', color=VkKeyboardColor.PRIMARY, payload=_p(cmd='stats', period='today'))
     kb.add_button('Вчера', color=VkKeyboardColor.PRIMARY, payload=_p(cmd='stats', period='yesterday'))
     kb.add_line()
     kb.add_button('Эта неделя', color=VkKeyboardColor.SECONDARY, payload=_p(cmd='stats', period='week'))
-    kb.add_button('Прошлая неделя', color=VkKeyboardColor.SECONDARY, payload=_p(cmd='stats', period='last_week'))
-    kb.add_line()
     kb.add_button('Этот месяц', color=VkKeyboardColor.SECONDARY, payload=_p(cmd='stats', period='month'))
-    kb.add_button('Прошлый месяц', color=VkKeyboardColor.SECONDARY, payload=_p(cmd='stats', period='last_month'))
     kb.add_line()
     kb.add_button('Этот год', color=VkKeyboardColor.SECONDARY, payload=_p(cmd='stats', period='year'))
     kb.add_button('📊 График', color=VkKeyboardColor.POSITIVE, payload=_p(cmd='chart', period='week'))
@@ -526,9 +507,9 @@ def edit_menu(sid):
 
 
 def day_actions(shipments, d_iso):
-    """До 25 отгрузок — 5 рядов + 1 ряд кнопок."""
+    """До 20 отгрузок — 4 ряда по 5 + 1 ряд кнопок = 5 рядов."""
     kb = VkKeyboard(inline=True)
-    shipments = shipments[:25]
+    shipments = shipments[:20]
     for i, s in enumerate(shipments):
         kb.add_button(f'#{i+1}', color=VkKeyboardColor.SECONDARY,
                       payload=_p(cmd='open_shipment', sid=s['id']))
@@ -546,24 +527,25 @@ def admin_menu():
     kb = VkKeyboard(inline=True)
     kb.add_button('💾 Скачать базу', color=VkKeyboardColor.PRIMARY,
                   payload=_p(cmd='download_db'))
-    kb.add_button('📤 Экспорт CSV (всё)', color=VkKeyboardColor.PRIMARY,
+    kb.add_button('📤 CSV (всё)', color=VkKeyboardColor.PRIMARY,
                   payload=_p(cmd='export_csv_all'))
     kb.add_line()
-    kb.add_button('📤 Экспорт CSV (30 дн.)', color=VkKeyboardColor.SECONDARY,
+    kb.add_button('📤 CSV (30 дн.)', color=VkKeyboardColor.SECONDARY,
                   payload=_p(cmd='export_csv'))
-    kb.add_button('📅 Произвольный период', color=VkKeyboardColor.SECONDARY,
+    kb.add_button('📅 Произвольно', color=VkKeyboardColor.SECONDARY,
                   payload=_p(cmd='stats', period='custom'))
     kb.add_line()
     kb.add_button('⚖️ Сравнить недели', color=VkKeyboardColor.POSITIVE,
                   payload=_p(cmd='week_compare'))
+    kb.add_button('🔔 Сводка', color=VkKeyboardColor.SECONDARY,
+                  payload=_p(cmd='toggle_report'))
+    kb.add_line()
     kb.add_button('🏠 В меню', color=VkKeyboardColor.SECONDARY,
                   payload=_p(cmd='to_menu'))
     return kb.get_keyboard()
 
 
-# ════════════════════════════════════════════════════════════
-#                        ИНИЦИАЛИЗАЦИЯ VK
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ ИНИЦИАЛИЗАЦИЯ VK ════════════════════════════
 
 init_db()
 
@@ -583,9 +565,7 @@ if TOKEN:
         longpoll = None
 
 
-# ════════════════════════════════════════════════════════════
-#                          УТИЛИТЫ
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ УТИЛИТЫ ════════════════════════════
 
 def is_admin(user_id):
     if not ADMIN_IDS:
@@ -654,13 +634,11 @@ def ru_date(d):
     return d.strftime('%d.%m.%Y')
 
 
-# ════════════════════════════════════════════════════════════
-#                       ФОРМАТИРОВАНИЕ
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ ФОРМАТИРОВАНИЕ ════════════════════════════
 
 def format_shipment_card(s):
     if not s:
-        return "❌ Отгрузка не найдена (возможно, удалена)."
+        return "❌ Отгрузка не найдена."
     d = ru_date(s['shipment_date'])
     lines = [
         f"#{s['id']} от {d}",
@@ -711,9 +689,7 @@ def format_stats(title, stats):
     return "\n".join(lines)
 
 
-# ════════════════════════════════════════════════════════════
-#                          МЕНЮ
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ МЕНЮ ════════════════════════════
 
 def show_main_menu(user_id):
     u = next((x for x in get_all_users() if x['user_id'] == user_id), None)
@@ -724,7 +700,6 @@ def show_main_menu(user_id):
 def show_help(user_id):
     text = (
         "🤖 Бот учёта отгрузок склада\n\n"
-        "Что я умею:\n"
         "• ➕ Добавлять погрузки\n"
         "• 📋 Показывать погрузки на день\n"
         "• ✏️ Изменять и удалять отгрузки\n"
@@ -738,9 +713,7 @@ def show_help(user_id):
     send(user_id, text, main_menu(is_admin(user_id)))
 
 
-# ════════════════════════════════════════════════════════════
-#                        ДОБАВЛЕНИЕ
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ ДОБАВЛЕНИЕ ════════════════════════════
 
 def start_add(user_id):
     clear_state(user_id)
@@ -800,9 +773,7 @@ def on_save_shipment(user_id):
          after_save_menu())
 
 
-# ════════════════════════════════════════════════════════════
-#                       ПРОСМОТР ДНЯ
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ ПРОСМОТР ДНЯ ════════════════════════════
 
 def show_day_shipments(user_id, d):
     shipments = get_shipments_by_date(d)
@@ -820,9 +791,7 @@ def on_open_shipment(user_id, payload):
          shipment_item_menu(sid, allow_delete=is_admin(user_id)))
 
 
-# ════════════════════════════════════════════════════════════
-#                        СТАТИСТИКА
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ СТАТИСТИКА ════════════════════════════
 
 def show_stats(user_id, period=None, start=None, end=None):
     today = tz_today()
@@ -869,9 +838,7 @@ def show_stats(user_id, period=None, start=None, end=None):
     send(user_id, format_stats(title, stats), main_menu(is_admin(user_id)))
 
 
-# ════════════════════════════════════════════════════════════
-#                           CSV
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ CSV ════════════════════════════
 
 def upload_csv_doc(user_id, data, filename):
     fd, path = tempfile.mkstemp(suffix='.csv')
@@ -943,9 +910,7 @@ def on_export_csv(user_id, days=30):
         send(user_id, f"❌ Не удалось загрузить файл: {e}")
 
 
-# ════════════════════════════════════════════════════════════
-#                      ИСТОРИЯ КЛИЕНТА
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ ИСТОРИЯ КЛИЕНТА ════════════════════════════
 
 def show_clients_for_history(user_id, page=0):
     clients = get_clients()
@@ -967,13 +932,11 @@ def show_client_card(user_id, cid):
         send(user_id, f"👤 {c['name']}\n\nНет отгрузок.", client_card_menu(cid))
         return
     lines = [
-        f"👤 {c['name']}",
-        "",
+        f"👤 {c['name']}", "",
         f"Всего отгрузок: {summary['count']}",
         f"Общий тоннаж: {fmt_num(summary['total_tonnage'])} т",
         f"Фур: {fmt_num(summary['total_trucks'])}",
-        f"Средний тоннаж: {fmt_num(round(summary['avg_tonnage'], 2))} т",
-        "",
+        f"Средний тоннаж: {fmt_num(round(summary['avg_tonnage'], 2))} т", "",
         f"Первая отгрузка: {ru_date(summary['first_date'])}",
         f"Последняя: {ru_date(summary['last_date'])}",
     ]
@@ -999,9 +962,7 @@ def show_client_history(user_id, cid):
     send(user_id, "\n".join(lines), client_card_menu(cid))
 
 
-# ════════════════════════════════════════════════════════════
-#                      СРАВНЕНИЕ НЕДЕЛЬ
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ СРАВНЕНИЕ НЕДЕЛЬ ════════════════════════════
 
 def show_week_comparison(user_id):
     cmp = week_comparison()
@@ -1019,27 +980,22 @@ def show_week_comparison(user_id):
     diff_trucks = round(diff_t / TRUCK_CAPACITY, 2)
 
     lines = [
-        "⚖️ Сравнение недель",
-        "",
+        "⚖️ Сравнение недель", "",
         f"Прошлая ({ru_date(cmp['last_range'][0])}–{ru_date(cmp['last_range'][1])}):",
         f"  • {fmt_num(t0)} т",
         f"  • {fmt_num(last_s['total_trucks'])} фур",
-        f"  • {last_s['count']} отгрузок",
-        "",
+        f"  • {last_s['count']} отгрузок", "",
         f"Эта ({ru_date(cmp['this_range'][0])}–{ru_date(cmp['this_range'][1])}):",
         f"  • {fmt_num(t1)} т",
         f"  • {fmt_num(this_s['total_trucks'])} фур",
-        f"  • {this_s['count']} отгрузок",
-        "",
+        f"  • {this_s['count']} отгрузок", "",
         f"Разница: {fmt_num(diff_t)} т ({pct_line})",
         f"          {fmt_num(diff_trucks)} фур",
     ]
     send(user_id, "\n".join(lines), main_menu(is_admin(user_id)))
 
 
-# ════════════════════════════════════════════════════════════
-#                          ГРАФИКИ
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ ГРАФИКИ ════════════════════════════
 
 def make_chart_png(start, end, title, shipments):
     by_day = defaultdict(float)
@@ -1056,26 +1012,21 @@ def make_chart_png(start, end, title, shipments):
 
     fig, ax = plt.subplots(figsize=(10, 5))
     bars = ax.bar(dates, values, color='#4a76a8', edgecolor='#2c4a70')
-
     ax.set_title(title, fontsize=14, fontweight='bold')
     ax.set_ylabel('Тонны')
     ax.grid(axis='y', linestyle='--', alpha=0.5)
     ax.set_axisbelow(True)
-
     for bar, v in zip(bars, values):
         if v > 0:
             ax.text(bar.get_x() + bar.get_width() / 2,
-                    bar.get_height(),
-                    f'{v:.0f}',
+                    bar.get_height(), f'{v:.0f}',
                     ha='center', va='bottom', fontsize=9)
-
     if len(dates) > 7:
         ax.xaxis.set_major_formatter(DateFormatter('%d.%m'))
         plt.xticks(rotation=45, ha='right')
     else:
         ax.set_xticks(dates)
         ax.set_xticklabels([d.strftime('%d.%m') for d in dates])
-
     plt.tight_layout()
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
@@ -1121,7 +1072,6 @@ def show_chart(user_id, period=None, start=None, end=None, client_name=None):
         else:
             s, e = today - timedelta(days=6), today
             title = "Отгрузки за последние 7 дней"
-
         shipments = get_shipments_by_period(s, e)
 
     if not shipments:
@@ -1141,9 +1091,7 @@ def show_chart(user_id, period=None, start=None, end=None, client_name=None):
         send(user_id, f"❌ Не удалось отправить график: {e}")
 
 
-# ════════════════════════════════════════════════════════════
-#                      НАСТРОЙКИ / АДМИН
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ АДМИН ════════════════════════════
 
 def on_download_db(user_id):
     if not is_admin(user_id):
@@ -1177,9 +1125,7 @@ def show_clients_info(user_id):
     send(user_id, "\n".join(lines), main_menu(is_admin(user_id)))
 
 
-# ════════════════════════════════════════════════════════════
-#                     ОБРАБОТКА PAYLOAD
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ PAYLOAD ════════════════════════════
 
 def handle_payload(user_id, payload):
     cmd = payload.get('cmd')
@@ -1187,11 +1133,14 @@ def handle_payload(user_id, payload):
     if cmd == 'cancel':
         clear_state(user_id)
         send(user_id, "Отменено.", main_menu(is_admin(user_id)))
-
     elif cmd == 'to_menu':
         clear_state(user_id)
         show_main_menu(user_id)
-
+    elif cmd == 'toggle_report':
+        new_val = toggle_morning_report(user_id)
+        label = 'включена' if new_val else 'выключена'
+        send(user_id, f"Утренняя сводка {label}.",
+             admin_menu() if is_admin(user_id) else main_menu(is_admin(user_id)))
     elif cmd == 'pick_date':
         d = payload.get('date')
         if d == 'today':
@@ -1200,13 +1149,12 @@ def handle_payload(user_id, payload):
             target = tz_today() + timedelta(days=1)
         elif d == 'custom':
             update_state(user_id, awaiting='add_custom_date')
-            send(user_id, "Введите дату (ДД.ММ.ГГГГ). Можно: 'сегодня', 'завтра', 'послезавтра'.")
+            send(user_id, "Введите дату (ДД.ММ.ГГГГ).")
             return
         else:
             return
         update_state(user_id, pending={'date': target.isoformat()})
         show_client_picker(user_id, action='add')
-
     elif cmd == 'pick_client':
         cid = payload.get('cid')
         action = payload.get('action', 'add')
@@ -1227,22 +1175,19 @@ def handle_payload(user_id, payload):
             s = get_shipment(sid)
             send(user_id, f"✅ Клиент изменён.\n\n{format_shipment_card(s)}",
                  main_menu(is_admin(user_id)))
-
     elif cmd == 'clients_page':
         show_client_picker(user_id, action=payload.get('action', 'add'),
                            sid=payload.get('sid'), page=int(payload.get('page', 0)))
-
     elif cmd == 'new_client':
         update_state(user_id, awaiting='new_client_name',
                      action=payload.get('action', 'add'),
                      sid=payload.get('sid'))
         send(user_id, "Введите имя нового клиента:")
-
     elif cmd == 'pick_tonnage':
         t = payload.get('t')
         if t == 'custom':
             update_state(user_id, awaiting='add_tonnage')
-            send(user_id, "Введите тоннаж числом (например, 25.5):")
+            send(user_id, "Введите тоннаж числом:")
             return
         try:
             t = float(t)
@@ -1252,25 +1197,19 @@ def handle_payload(user_id, payload):
         p['tonnage'] = t
         update_state(user_id, awaiting=None, pending=p)
         show_confirm(user_id)
-
     elif cmd == 'save_shipment':
         on_save_shipment(user_id)
-
     elif cmd == 'restart_add':
         start_add(user_id)
-
     elif cmd == 'add_again':
         p = get_state(user_id).get('pending', {})
         d = p.get('date') or tz_today().isoformat()
         start_add_with_date(user_id, d)
-
     elif cmd == 'add_again_for':
         start_add_with_date(user_id, payload.get('date') or tz_today().isoformat())
-
     elif cmd == 'add_comment':
         update_state(user_id, awaiting='add_comment')
         send(user_id, "Введите комментарий (или '-' чтобы убрать):")
-
     elif cmd == 'stats':
         period = payload.get('period')
         if period == 'custom':
@@ -1278,23 +1217,17 @@ def handle_payload(user_id, payload):
             send(user_id, "Введите начальную дату (ДД.ММ.ГГГГ):")
             return
         show_stats(user_id, period=period)
-
     elif cmd == 'export_csv':
         on_export_csv(user_id)
-
     elif cmd == 'export_csv_all':
         on_export_csv(user_id, days=None)
-
     elif cmd == 'download_db':
         on_download_db(user_id)
-
     elif cmd == 'admin_menu':
         if is_admin(user_id):
             send(user_id, "⚙️ Настройки:", admin_menu())
-
     elif cmd == 'open_shipment':
         on_open_shipment(user_id, payload)
-
     elif cmd == 'edit_shipment':
         sid = payload.get('sid')
         s = get_shipment(sid)
@@ -1302,7 +1235,6 @@ def handle_payload(user_id, payload):
             send(user_id, "Не найдено.")
             return
         send(user_id, f"Что изменить?\n\n{format_shipment_card(s)}", edit_menu(sid))
-
     elif cmd == 'edit_field':
         sid = payload.get('sid')
         field = payload.get('field')
@@ -1320,35 +1252,28 @@ def handle_payload(user_id, payload):
             send(user_id, f"Текущая дата: {ru_date(s['shipment_date'])}\nВведите новую (ДД.ММ.ГГГГ):")
         elif field == 'comment':
             update_state(user_id, awaiting='edit_comment', sid=sid)
-            send(user_id, f"Текущий комментарий: {s.get('comment') or '(нет)'}\nВведите новый (или '-' чтобы убрать):")
-
+            send(user_id, f"Текущий комментарий: {s.get('comment') or '(нет)'}\nВведите новый:")
     elif cmd == 'del_shipment':
         sid = payload.get('sid')
         if not is_admin(user_id):
-            send(user_id, "❌ Удалять может только администратор.")
+            send(user_id, "❌ Только администратор.")
             return
         delete_shipment(sid)
         send(user_id, "🗑 Удалено.", main_menu(is_admin(user_id)))
-
     elif cmd == 'open_client':
         show_client_card(user_id, payload.get('cid'))
-
     elif cmd == 'clients_summary':
         show_clients_info(user_id)
-
     elif cmd == 'client_history':
         show_client_history(user_id, payload.get('cid'))
-
     elif cmd == 'client_chart':
         c = get_client(payload.get('cid'))
         if not c:
             send(user_id, "❌ Клиент не найден.")
             return
         show_chart(user_id, client_name=c['name'])
-
     elif cmd == 'week_compare':
         show_week_comparison(user_id)
-
     elif cmd == 'chart':
         period = payload.get('period')
         if period == 'custom':
@@ -1358,9 +1283,7 @@ def handle_payload(user_id, payload):
         show_chart(user_id, period=period)
 
 
-# ════════════════════════════════════════════════════════════
-#                     ОБРАБОТКА ТЕКСТА
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ ТЕКСТ ════════════════════════════
 
 def handle_text(user_id, text):
     state = get_state(user_id)
@@ -1369,12 +1292,11 @@ def handle_text(user_id, text):
     if awaiting == 'add_custom_date':
         d = parse_date(text)
         if not d:
-            send(user_id, "❌ Не понял дату. Введите в формате ДД.ММ.ГГГГ:")
+            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:")
             return
         clear_state(user_id)
         set_state(user_id, pending={'date': d.isoformat()})
         show_client_picker(user_id, action='add')
-
     elif awaiting == 'new_client_name':
         name = text.strip()
         if not name:
@@ -1394,7 +1316,6 @@ def handle_text(user_id, text):
             p['client'] = name
             update_state(user_id, awaiting='add_tonnage', pending=p)
             send(user_id, f"👤 {name}\nВведите тоннаж или выберите:", tonnage_menu())
-
     elif awaiting == 'add_tonnage':
         t = parse_number(text)
         if t is None or t <= 0:
@@ -1404,7 +1325,6 @@ def handle_text(user_id, text):
         p['tonnage'] = t
         update_state(user_id, awaiting=None, pending=p)
         show_confirm(user_id)
-
     elif awaiting == 'add_comment':
         comment = text.strip()
         if comment == '-':
@@ -1413,7 +1333,6 @@ def handle_text(user_id, text):
         p['comment'] = comment
         update_state(user_id, awaiting=None, pending=p)
         show_confirm(user_id)
-
     elif awaiting == 'edit_tonnage':
         t = parse_number(text)
         if t is None or t <= 0:
@@ -1425,11 +1344,10 @@ def handle_text(user_id, text):
         s = get_shipment(sid)
         send(user_id, f"✅ Тоннаж изменён.\n\n{format_shipment_card(s)}",
              main_menu(is_admin(user_id)))
-
     elif awaiting == 'edit_date':
         d = parse_date(text)
         if not d:
-            send(user_id, "❌ Не понял дату. Введите в формате ДД.ММ.ГГГГ:")
+            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:")
             return
         sid = state.get('sid')
         update_shipment(sid, shipment_date=d.isoformat(), user_id=user_id)
@@ -1437,7 +1355,6 @@ def handle_text(user_id, text):
         s = get_shipment(sid)
         send(user_id, f"✅ Дата изменена.\n\n{format_shipment_card(s)}",
              main_menu(is_admin(user_id)))
-
     elif awaiting == 'edit_comment':
         comment = text.strip()
         if comment == '-':
@@ -1448,41 +1365,36 @@ def handle_text(user_id, text):
         s = get_shipment(sid)
         send(user_id, f"✅ Комментарий изменён.\n\n{format_shipment_card(s)}",
              main_menu(is_admin(user_id)))
-
     elif awaiting == 'stats_custom_start':
         d = parse_date(text)
         if not d:
-            send(user_id, "❌ Не понял дату. Введите в формате ДД.ММ.ГГГГ:")
+            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:")
             return
         update_state(user_id, awaiting='stats_custom_end', stats_start=d.isoformat())
         send(user_id, "Введите конечную дату (ДД.ММ.ГГГГ):")
-
     elif awaiting == 'stats_custom_end':
         d = parse_date(text)
         if not d:
-            send(user_id, "❌ Не понял дату. Введите в формате ДД.ММ.ГГГГ:")
+            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:")
             return
         start = state.get('stats_start')
         clear_state(user_id)
         show_stats(user_id, period='custom', start=start, end=d.isoformat())
-
     elif awaiting == 'chart_custom_start':
         d = parse_date(text)
         if not d:
-            send(user_id, "❌ Не понял дату. Введите в формате ДД.ММ.ГГГГ:")
+            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:")
             return
         update_state(user_id, awaiting='chart_custom_end', chart_start=d.isoformat())
         send(user_id, "Введите конечную дату (ДД.ММ.ГГГГ):")
-
     elif awaiting == 'chart_custom_end':
         d = parse_date(text)
         if not d:
-            send(user_id, "❌ Не понял дату. Введите в формате ДД.ММ.ГГГГ:")
+            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:")
             return
         start = state.get('chart_start')
         clear_state(user_id)
         show_chart(user_id, period='custom', start=start, end=d.isoformat())
-
     elif text == '➕ Добавить погрузку':
         start_add(user_id)
     elif text == '📋 Сегодня':
@@ -1491,18 +1403,11 @@ def handle_text(user_id, text):
         show_day_shipments(user_id, tz_today() + timedelta(days=1))
     elif text == '📅 Другая дата':
         update_state(user_id, awaiting='add_custom_date')
-        send(user_id, "Введите дату (ДД.ММ.ГГГГ). Можно: 'сегодня', 'завтра', 'послезавтра'.")
+        send(user_id, "Введите дату (ДД.ММ.ГГГГ).")
     elif text == '📊 Статистика':
         send(user_id, "Выберите период:", stats_menu())
     elif text == '📁 Клиенты':
         show_clients_for_history(user_id)
-    elif text == '❓ Помощь':
-        show_help(user_id)
-    elif text.startswith('🔔 Сводка') or text.startswith('🔕 Сводка'):
-        new_val = toggle_morning_report(user_id)
-        label = 'включена' if new_val else 'выключена'
-        send(user_id, f"Утренняя сводка {label}.",
-             main_menu(is_admin(user_id), bool(new_val)))
     elif text == '⚙️ Настройки' and is_admin(user_id):
         send(user_id, "⚙️ Настройки:", admin_menu())
     else:
@@ -1510,9 +1415,7 @@ def handle_text(user_id, text):
              main_menu(is_admin(user_id)))
 
 
-# ════════════════════════════════════════════════════════════
-#                       ФОНОВЫЕ ЗАДАЧИ
-# ════════════════════════════════════════════════════════════
+# ════════════════════════════ ФОН ════════════════════════════
 
 _morning_last_day = None
 
@@ -1565,10 +1468,6 @@ def backup_loop():
         time.sleep(60)
 
 
-# ════════════════════════════════════════════════════════════
-#                    KEEP-ALIVE ВЕБ-СЕРВЕР
-# ════════════════════════════════════════════════════════════
-
 def _run_keepalive_server():
     port = int(os.getenv('PORT', '8080'))
 
@@ -1590,10 +1489,6 @@ def _run_keepalive_server():
         print(f"[keepalive] error: {e}")
 
 
-# ════════════════════════════════════════════════════════════
-#                          ЗАПУСК
-# ════════════════════════════════════════════════════════════
-
 def _extract_payload(event):
     raw = getattr(event, 'payload', None)
     if not raw:
@@ -1610,10 +1505,10 @@ def main():
     print(f"[bot] starting at {tz_now()} (UTC+{TIMEZONE_OFFSET_HOURS})")
 
     if not TOKEN:
-        print("❌ VK_TOKEN не задан. Проверьте переменные окружения Bothost.")
+        print("❌ VK_TOKEN не задан.")
         return
     if not GROUP_ID:
-        print("❌ VK_GROUP_ID не задан. Проверьте переменные окружения Bothost.")
+        print("❌ VK_GROUP_ID не задан.")
         return
     if longpoll is None:
         print("❌ Long Poll не инициализирован (проверьте токен).")
