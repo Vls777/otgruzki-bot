@@ -37,17 +37,12 @@ TOKEN = os.getenv('VK_TOKEN', '').strip()
 GROUP_ID = int(os.getenv('VK_GROUP_ID', '0'))
 
 ADMIN_IDS = []
-
 TRUCK_CAPACITY = 19.0
-
 TIMEZONE_OFFSET_HOURS = 5
-
 MORNING_REPORT_HOUR = 8
 MORNING_REPORT_MINUTE = 0
-
 BACKUP_HOUR = 23
 BACKUP_MINUTE = 0
-
 BACKUP_KEEP = 30
 
 DATA_DIR = '/app/data'
@@ -199,7 +194,6 @@ def get_client(client_id):
 
 
 def touch_client(name, conn=None):
-    """Обновляет last_used. Если передан conn — использует его."""
     sql = """INSERT INTO clients (name, last_used) VALUES (?, ?)
              ON CONFLICT(name) DO UPDATE SET last_used = excluded.last_used"""
     params = (name.strip(), now_iso())
@@ -408,7 +402,6 @@ def date_choice_menu():
 
 
 def clients_menu(clients, action='add', sid=None, page=0, per_page=6):
-    """Максимум 6 рядов: 3 ряда клиентов (6 шт) + 1 навигация + 1 Новый/Сводка + 1 Отмена."""
     kb = VkKeyboard(inline=True)
     start = page * per_page
     chunk = clients[start:start + per_page]
@@ -495,7 +488,7 @@ def after_save_menu():
 
 
 def stats_menu():
-    """Ровно 6 рядов — предел инлайн-клавиатуры ВК."""
+    """4 ряда — точно влезает в лимит ВК."""
     kb = VkKeyboard(inline=True)
     kb.add_button('Сегодня', color=VkKeyboardColor.PRIMARY, payload=_p(cmd='stats', period='today'))
     kb.add_button('Вчера', color=VkKeyboardColor.PRIMARY, payload=_p(cmd='stats', period='yesterday'))
@@ -507,13 +500,7 @@ def stats_menu():
     kb.add_button('Прошлый месяц', color=VkKeyboardColor.SECONDARY, payload=_p(cmd='stats', period='last_month'))
     kb.add_line()
     kb.add_button('Этот год', color=VkKeyboardColor.SECONDARY, payload=_p(cmd='stats', period='year'))
-    kb.add_button('📅 Произвольно', color=VkKeyboardColor.POSITIVE, payload=_p(cmd='stats', period='custom'))
-    kb.add_line()
-    kb.add_button('⚖️ Сравнить недели', color=VkKeyboardColor.POSITIVE, payload=_p(cmd='week_compare'))
-    kb.add_button('📈 График: 7 дней', color=VkKeyboardColor.SECONDARY, payload=_p(cmd='chart', period='week'))
-    kb.add_line()
-    kb.add_button('📈 График: месяц', color=VkKeyboardColor.SECONDARY, payload=_p(cmd='chart', period='month'))
-    kb.add_button('📤 Экспорт CSV (30 дн.)', color=VkKeyboardColor.SECONDARY, payload=_p(cmd='export_csv'))
+    kb.add_button('📊 График', color=VkKeyboardColor.POSITIVE, payload=_p(cmd='chart', period='week'))
     return kb.get_keyboard()
 
 
@@ -539,7 +526,7 @@ def edit_menu(sid):
 
 
 def day_actions(shipments, d_iso):
-    """Максимум 6 рядов: до 25 отгрузок (5 рядов по 5) + 1 ряд кнопок."""
+    """До 25 отгрузок — 5 рядов + 1 ряд кнопок."""
     kb = VkKeyboard(inline=True)
     shipments = shipments[:25]
     for i, s in enumerate(shipments):
@@ -564,7 +551,11 @@ def admin_menu():
     kb.add_line()
     kb.add_button('📤 Экспорт CSV (30 дн.)', color=VkKeyboardColor.SECONDARY,
                   payload=_p(cmd='export_csv'))
+    kb.add_button('📅 Произвольный период', color=VkKeyboardColor.SECONDARY,
+                  payload=_p(cmd='stats', period='custom'))
     kb.add_line()
+    kb.add_button('⚖️ Сравнить недели', color=VkKeyboardColor.POSITIVE,
+                  payload=_p(cmd='week_compare'))
     kb.add_button('🏠 В меню', color=VkKeyboardColor.SECONDARY,
                   payload=_p(cmd='to_menu'))
     return kb.get_keyboard()
@@ -1579,7 +1570,6 @@ def backup_loop():
 # ════════════════════════════════════════════════════════════
 
 def _run_keepalive_server():
-    """Мини веб-сервер — нужен, чтобы Bothost видел контейнер живым."""
     port = int(os.getenv('PORT', '8080'))
 
     class Handler(BaseHTTPRequestHandler):
@@ -1605,7 +1595,6 @@ def _run_keepalive_server():
 # ════════════════════════════════════════════════════════════
 
 def _extract_payload(event):
-    """Безопасно достаёт payload из события VK."""
     raw = getattr(event, 'payload', None)
     if not raw:
         return None
