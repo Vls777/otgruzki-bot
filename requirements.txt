@@ -1,0 +1,2 @@
+vk_api>=11.9.9
+matplotlib>=3.7
