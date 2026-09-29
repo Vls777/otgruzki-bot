@@ -26,6 +26,7 @@ from vk_api.utils import get_random_id
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 from matplotlib.dates import DateFormatter
 plt.rcParams['font.family'] = 'DejaVu Sans'
 
@@ -757,7 +758,7 @@ def show_help(user_id):
         "🤖 Бот учёта отгрузок склада\n\n"
         "• ➕ Добавлять погрузки\n"
         "• 📋 Показывать погрузки на день\n"
-        "• 🖼 Картинка дня — красивая сводка\n"
+        "• 🖼 Картинка дня — сводка в формате А4\n"
         "• ✏️ Изменять и удалять отгрузки\n"
         "• 📊 Статистика за любой период\n"
         "• 📁 Справочник клиентов\n"
@@ -879,114 +880,168 @@ def show_stats(user_id, period=None, start=None, end=None):
     send(user_id, format_stats(title, stats), main_menu(is_admin(user_id)))
 
 
-# ════════════════════════════ КАРТИНКА ДНЯ ════════════════════════════
+# ════════════════════════════ КАРТИНКА ДНЯ (А4 вертикально) ════════════════════════════
 
 def make_day_image_png(d, shipments):
-    """Рисует PNG-картинку с погрузками на день."""
-    date_str = ru_date(d)
-
-    # считаем итоги
-    total_t = sum(s['tonnage'] for s in shipments)
-    total_trucks = round(total_t / TRUCK_CAPACITY, 2)
-
-    # размер фигуры — выше, если много клиентов
-    rows = len(shipments) if shipments else 1
-    height = max(6, 1.5 + rows * 0.45)
-    fig, ax = plt.subplots(figsize=(10, height))
+    """
+    Рисует PNG-картинку формата А4 вертикально (210×297 мм) с погрузками на день.
+    Крупные строки, автоподбор размера шрифта — всё умещается.
+    """
+    # A4 в дюймах: 210мм = 8.27", 297мм = 11.69"
+    fig = plt.figure(figsize=(8.27, 11.69), dpi=150)
+    ax = fig.add_axes([0, 0, 1, 1])   # занимаем всю фигуру
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
     ax.axis('off')
 
-    # ── Заголовок ──
-    ax.text(0.5, 1.0, f"📋 Погрузки на {date_str}",
-            ha='center', va='top', fontsize=20, fontweight='bold',
-            color='#1a3d63', transform=ax.transAxes)
+    date_str = ru_date(d)
 
-    # ── Подзаголовок с итогами ──
-    summary = f"Всего: {fmt_num(total_t)} т   |   {fmt_num(total_trucks)} фур   |   {len(shipments)} отгрузок"
-    ax.text(0.5, 0.94, summary,
-            ha='center', va='top', fontsize=12, color='#4a76a8',
-            transform=ax.transAxes)
+    # ── Итоги ──
+    total_t = sum(s['tonnage'] for s in shipments)
+    total_trucks = round(total_t / TRUCK_CAPACITY, 2)
+    cnt = len(shipments)
+
+    # ── Цвета ──
+    COLOR_DARK = '#1a3d63'
+    COLOR_ACCENT = '#4a76a8'
+    COLOR_LIGHT_ROW = '#f0f4f9'
+    COLOR_LINE = '#d0d9e4'
+
+    # ── Шапка ──
+    ax.add_patch(Rectangle((0, 0.94), 1, 0.06,
+                            facecolor=COLOR_DARK, edgecolor='none'))
+    ax.text(0.5, 0.97, 'ВЕЛЕС · Отгрузки склада',
+            ha='center', va='center', fontsize=14, color='white',
+            fontweight='bold')
+
+    # ── Дата ──
+    ax.text(0.5, 0.905, f'📋 Погрузки на {date_str}',
+            ha='center', va='center', fontsize=22, color=COLOR_DARK,
+            fontweight='bold')
+
+    # ── Сводка (под датой) ──
+    summary_y = 0.875
+    ax.add_patch(Rectangle((0.05, summary_y - 0.018), 0.9, 0.036,
+                            facecolor='#e8eef6', edgecolor='none'))
+    ax.text(0.5, summary_y,
+            f'Всего: {fmt_num(total_t)} т    ·    {fmt_num(total_trucks)} фур    ·    {cnt} отгрузок',
+            ha='center', va='center', fontsize=12, color=COLOR_ACCENT,
+            fontweight='bold')
 
     if not shipments:
-        ax.text(0.5, 0.5, "— нет погрузок —",
-                ha='center', va='center', fontsize=16, color='#999',
-                transform=ax.transAxes)
-    else:
-        # ── Таблица ──
-        y_start = 0.86
-        row_h = 0.03 + (0.42 / max(len(shipments), 1))
-        # ограничим высоту строки
-        row_h = min(row_h, 0.06)
+        ax.text(0.5, 0.5, '— нет погрузок —',
+                ha='center', va='center', fontsize=24, color='#aaa')
+        plt.savefig(buf := io.BytesIO(), format='png',
+                    dpi=150, facecolor='white')
+        plt.close(fig)
+        buf.seek(0)
+        return buf.read()
 
-        for i, s in enumerate(shipments):
-            y = y_start - i * row_h
+    # ── Область для строк ──
+    area_top = 0.845
+    area_bottom = 0.105
+    area_h = area_top - area_bottom
 
-            # фон полосы (чередование)
-            if i % 2 == 0:
-                ax.add_patch(plt.Rectangle((0.03, y - row_h * 0.45),
-                                           0.94, row_h * 0.9,
-                                           transform=ax.transAxes,
-                                           facecolor='#f0f4f9',
-                                           edgecolor='none'))
+    # отступы
+    pad_left = 0.05
+    pad_right = 0.05
+    content_w = 1 - pad_left - pad_right
 
-            # номер
-            ax.text(0.05, y, f"{i+1}.",
-                    ha='left', va='center', fontsize=11,
-                    color='#999', transform=ax.transAxes)
+    # позиция правого края для веса
+    right_edge = 1 - pad_right
 
-            # клиент
-            name = s['client_name']
-            if len(name) > 55:
-                name = name[:52] + "…"
-            ax.text(0.09, y, name,
-                    ha='left', va='center', fontsize=12,
-                    color='#1a3d63', transform=ax.transAxes)
+    # сколько строк поместится — подбираем высоту
+    row_count = len(shipments)
+    row_h_max = 0.055          # максимальная высота строки
+    row_h_min = 0.028          # минимальная высота строки
+    row_h = min(row_h_max, area_h / row_count)
 
-            # тоннаж + фуры
-            weight_str = (f"{fmt_num(s['tonnage'])} т  "
-                          f"({fmt_num(s['trucks'])} фур)")
-            ax.text(0.97, y, weight_str,
-                    ha='right', va='center', fontsize=12, fontweight='bold',
-                    color='#4a76a8', transform=ax.transAxes)
+    # если строк слишком много и row_h < row_h_min — всё равно рисуем мелко
+    font_main = max(9, min(14, int(row_h * 260)))
+    font_weight = max(9, min(13, int(row_h * 240)))
+    font_cmt = max(7, min(10, int(row_h * 200)))
 
-            # если есть комментарий — вторая строка
-            if s.get('comment'):
-                cmt = s['comment']
-                if len(cmt) > 60: cmt = cmt[:57] + "…"
-                ax.text(0.09, y - row_h * 0.35, f"💬 {cmt}",
-                        ha='left', va='center', fontsize=9,
-                        color='#777', style='italic',
-                        transform=ax.transAxes)
+    # рисуем с верхней границы
+    y_cursor = area_top
 
-        # ── Итоговая строка внизу ──
-        footer_y = 0.06
-        ax.add_patch(plt.Rectangle((0.03, footer_y - 0.02),
-                                   0.94, 0.05,
-                                   transform=ax.transAxes,
-                                   facecolor='#4a76a8',
-                                   edgecolor='none'))
-        ax.text(0.5, footer_y + 0.005,
-                f"ИТОГО:  {fmt_num(total_t)} т   |   {fmt_num(total_trucks)} фур   |   {len(shipments)} отгрузок",
-                ha='center', va='center', fontsize=13, fontweight='bold',
-                color='white', transform=ax.transAxes)
+    for i, s in enumerate(shipments):
+        row_top = y_cursor
+        row_bottom = y_cursor - row_h
+        y_center = (row_top + row_bottom) / 2
 
-    plt.tight_layout()
+        # чередующийся фон
+        if i % 2 == 0:
+            ax.add_patch(Rectangle((pad_left, row_bottom),
+                                    content_w, row_h,
+                                    facecolor=COLOR_LIGHT_ROW,
+                                    edgecolor='none'))
+
+        # разделительная линия снизу
+        ax.plot([pad_left, right_edge], [row_bottom, row_bottom],
+                color=COLOR_LINE, linewidth=0.8)
+
+        # номер
+        ax.text(pad_left + 0.005, y_center, f'{i+1}.',
+                ha='left', va='center', fontsize=font_main,
+                color='#9aa7b5')
+
+        # клиент — обрезаем до 40 символов, чтобы влезло
+        name = s['client_name']
+        max_chars = 44
+        if len(name) > max_chars:
+            name = name[:max_chars - 1] + '…'
+        ax.text(pad_left + 0.04, y_center, name,
+                ha='left', va='center', fontsize=font_main,
+                color=COLOR_DARK)
+
+        # вес справа
+        w_str = f"{fmt_num(s['tonnage'])} т · {fmt_num(s['trucks'])} фур"
+        ax.text(right_edge - 0.005, y_center, w_str,
+                ha='right', va='center', fontsize=font_weight,
+                fontweight='bold', color=COLOR_ACCENT)
+
+        # комментарий — мелкой строкой под именем (если место есть)
+        if s.get('comment') and row_h > 0.035:
+            cmt = s['comment']
+            if len(cmt) > 60:
+                cmt = cmt[:59] + '…'
+            ax.text(pad_left + 0.04, row_bottom + row_h * 0.22,
+                    f'💬 {cmt}',
+                    ha='left', va='center', fontsize=font_cmt,
+                    color='#8b96a4', style='italic')
+
+        y_cursor = row_bottom
+
+    # ── Полоса итогов внизу ──
+    ax.add_patch(Rectangle((0, 0.03), 1, 0.06,
+                            facecolor=COLOR_ACCENT, edgecolor='none'))
+    ax.text(0.5, 0.06,
+            f'ИТОГО:  {fmt_num(total_t)} т   ·   {fmt_num(total_trucks)} фур   ·   {cnt} отгрузок',
+            ha='center', va='center', fontsize=15, color='white',
+            fontweight='bold')
+
+    # ── Нижняя подпись ──
+    ax.text(0.5, 0.012,
+            f'Сформировано ботом · {tz_now().strftime("%d.%m.%Y %H:%M")}',
+            ha='center', va='center', fontsize=8, color='#b0b8c2')
+
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=110, bbox_inches='tight',
-                facecolor='white')
+    plt.savefig(buf, format='png', dpi=150, facecolor='white',
+                bbox_inches=None, pad_inches=0)
     plt.close(fig)
     buf.seek(0)
     return buf.read()
 
 
 def show_day_image(user_id, d):
-    """Отправляет картинку с погрузками на день."""
+    """Отправляет картинку формата А4 с погрузками на день."""
     shipments = get_shipments_by_date(d)
     png = make_day_image_png(d, shipments)
     try:
         attach = upload_photo_bytes(user_id, png)
         total_t = sum(s['tonnage'] for s in shipments)
         total_trucks = round(total_t / TRUCK_CAPACITY, 2)
-        caption = (f"🖼 Погрузки на {ru_date(d)}\n\n"
+        caption = (f"🖼 Погрузки на {ru_date(d)} (А4)\n\n"
                    f"Итого: {fmt_num(total_t)} т, {fmt_num(total_trucks)} фур, "
                    f"{len(shipments)} отгрузок")
         send(user_id, caption, main_menu(is_admin(user_id)), attachment=attach)
@@ -2074,20 +2129,18 @@ def morning_report_loop():
                     if not u.get('morning_report'): continue
                     uid = u['user_id']
                     try:
-                        # Текстовая сводка
                         shipments = get_shipments_by_date(n.date())
                         text = format_day_shipments(
                             n.date(), shipments,
                             f"🌅 Доброе утро! Погрузки на сегодня ({ru_date(n.date())}):")
                         send(uid, text, main_menu(is_admin(uid)))
 
-                        # И картинка
                         try:
                             png = make_day_image_png(n.date(), shipments)
                             attach = upload_photo_bytes(uid, png)
                             total_t = sum(s['tonnage'] for s in shipments)
                             total_trucks = round(total_t / TRUCK_CAPACITY, 2)
-                            caption = (f"🖼 Сводка на {ru_date(n.date())}\n"
+                            caption = (f"🖼 Сводка А4 на {ru_date(n.date())}\n"
                                        f"Итого: {fmt_num(total_t)} т, "
                                        f"{fmt_num(total_trucks)} фур")
                             send(uid, caption, main_menu(is_admin(uid)),
@@ -2195,12 +2248,6 @@ def _collect_docs_for_import(event, user_id):
                             docs.append(a)
             except Exception:
                 traceback.print_exc()
-    try:
-        raw = getattr(event, 'attachments', None)
-        print(f"[import] user={user_id} msg_id={getattr(event,'message_id',None)} "
-              f"docs={len(docs)} raw={str(raw)[:200]}")
-    except Exception:
-        pass
     return docs
 
 
