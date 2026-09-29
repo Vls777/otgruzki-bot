@@ -867,13 +867,7 @@ def _import_rows(user_id, rows):
 
 
 def import_1c_data(user_id, rows):
-    """Парсит выгрузку из 1С «Выполнение сборки и отгрузки товаров».
-    Формат:
-      <Склад>                       — заголовок, пропускаем
-      <Клиент>                      — текст в A, B и F пустые, следующий ряд — Расходный ордер
-      Расходный ордер ... от ДД.ММ.ГГГГ ...   — вес в последней колонке (кг)
-      <товары>                      — пропускаем
-    """
+    """Парсит выгрузку из 1С «Выполнение сборки и отгрузки товаров»."""
     n = len(rows)
     next_nonempty = [None] * n
     last = None
@@ -892,79 +886,59 @@ def import_1c_data(user_id, rows):
     for idx, row in enumerate(rows):
         rn = idx + 1
         try:
-            if not row:
-                continue
+            if not row: continue
             r = list(row)
-            if len(r) < 7:
-                r = r + [None] * (7 - len(r))
-            a = r[0]
-            b = r[1] if len(r) > 1 else None
+            if len(r) < 7: r = r + [None] * (7 - len(r))
+            a = r[0]; b = r[1] if len(r) > 1 else None
             f = r[5] if len(r) > 5 else None
             g = r[6] if len(r) > 6 else None
-
             a_str = str(a).strip() if a is not None else ''
-            if not a_str:
-                continue
+            if not a_str: continue
             a_low = a_str.lower()
 
-            # Заголовки отчёта
             if (a_low.startswith('выполнение сборки') or
-                a_low.startswith('параметры') or
-                a_low.startswith('отбор') or
+                a_low.startswith('параметры') or a_low.startswith('отбор') or
                 a_low in ('склад', 'получатель', 'регистратор', 'артикул', 'итого')):
                 continue
 
-            # Строка отгрузки
             if 'расходный ордер' in a_low:
                 if current_client is None:
-                    skipped += 1
-                    continue
+                    skipped += 1; continue
                 m = date_re.search(a_str)
                 if not m:
-                    skipped += 1
-                    continue
+                    skipped += 1; continue
                 try:
                     d = datetime.strptime(m.group(1), '%d.%m.%Y').date()
                 except ValueError:
-                    errors.append(f"Строка {rn}: плохая дата")
-                    skipped += 1
-                    continue
+                    errors.append(f"Строка {rn}: плохая дата"); skipped += 1; continue
                 g_str = str(g).replace(',', '.').replace(' ', '').strip() if g is not None else ''
                 if not g_str:
-                    skipped += 1
-                    continue
+                    skipped += 1; continue
                 try:
                     weight_kg = float(g_str)
                 except ValueError:
-                    skipped += 1
-                    continue
+                    skipped += 1; continue
                 weight_t = weight_kg / 1000.0
                 if weight_t <= 0:
-                    skipped += 1
-                    continue
+                    skipped += 1; continue
                 add_shipment(current_client, round(weight_t, 3), d.isoformat(),
                              user_id, comment='1С')
                 imported += 1
                 continue
 
-            # Строка товара (артикул — число)
             if a_str.replace('.', '').replace(',', '').replace(' ', '').isdigit():
                 continue
 
-            # Претендент на клиента: B и F пусто
             b_str = str(b).strip() if b is not None else ''
             f_str = str(f).strip() if f is not None else ''
             if b_str != '' or f_str != '':
                 continue
 
-            # Клиент — если следующая непустая строка начинается с «Расходный ордер»
             nr = next_nonempty[idx]
-            if nr is None:
-                continue
+            if nr is None: continue
             nr_a = str(nr[0]).strip().lower() if nr[0] is not None else ''
             if 'расходный ордер' in nr_a:
                 current_client = a_str
-            # иначе это склад — пропускаем
 
         except Exception as e:
             errors.append(f"Строка {rn}: {e}")
@@ -988,7 +962,6 @@ def import_csv_data(user_id, data_bytes, filename=''):
         except Exception as e:
             return 0, 0, [f"Не удалось прочитать Excel: {e}"]
 
-        # 1С?
         for r in rows[:300]:
             if r and r[0] and 'расходный ордер' in str(r[0]).lower():
                 return import_1c_data(user_id, rows)
@@ -997,20 +970,15 @@ def import_csv_data(user_id, data_bytes, filename=''):
     if name.endswith('.xls'):
         return 0, 0, ["Формат .xls не поддерживается. Сохраните как .xlsx"]
 
-    # CSV
     try:
         text = data_bytes.decode('utf-8-sig')
     except UnicodeDecodeError:
-        try:
-            text = data_bytes.decode('cp1251')
-        except Exception:
-            return 0, 0, ["Не удалось прочитать файл"]
+        try: text = data_bytes.decode('cp1251')
+        except Exception: return 0, 0, ["Не удалось прочитать файл"]
 
     lines = [ln for ln in text.splitlines() if ln.strip()]
-    if not lines:
-        return 0, 0, ["Файл пуст"]
+    if not lines: return 0, 0, ["Файл пуст"]
 
-    # 1С-CSV?
     for ln in lines[:50]:
         if 'расходный ордер' in ln.lower():
             delim = ';' if ';' in lines[0] else ('\t' if '\t' in lines[0] else ',')
@@ -1051,11 +1019,9 @@ def handle_csv_attachment(user_id, attachments):
         result = [f"📥 Импорт завершён:", f"• Добавлено: {imported}"]
         if skipped: result.append(f"• Пропущено: {skipped}")
         if errors:
-            result.append("")
-            result.append("Примеры ошибок:")
+            result.append(""); result.append("Примеры ошибок:")
             result.extend(errors[:5])
-        result.append("")
-        result.append("Проверьте: 📊 Статистика → Этот год")
+        result.append(""); result.append("Проверьте: 📊 Статистика → Этот год")
         send(user_id, "\n".join(result), admin_menu())
         return
     send(user_id, "❌ Во вложении не найден файл.", admin_menu())
@@ -1727,10 +1693,46 @@ def _extract_payload(event):
 
 
 def _extract_attachments(event):
+    """Возвращает список вложений из сообщения, включая документы.
+    Поддерживает и готовый список (list), и сырой long poll формат (dict)."""
     atts = getattr(event, 'attachments', None)
-    if not atts: return []
-    if isinstance(atts, dict): return atts.get('attachments', [])
-    return atts
+    if not atts:
+        return []
+
+    # Уже список объектов
+    if isinstance(atts, list):
+        return atts
+
+    # Сырой dict из long poll: {'attach1': 'doc123_456', 'attach1_type': 'doc'}
+    if isinstance(atts, dict):
+        inner = atts.get('attachments')
+        if isinstance(inner, list):
+            return inner
+
+        result = []
+        i = 1
+        while True:
+            ref = atts.get(f'attach{i}')
+            typ = atts.get(f'attach{i}_type')
+            if ref is None and typ is None:
+                break
+            if typ == 'doc' and ref:
+                try:
+                    if isinstance(ref, str) and ref.startswith('doc'):
+                        # ref вида 'doc123_456'
+                        parts = ref[3:].split('_')
+                        owner_id = int(parts[0])
+                        doc_id = int(parts[1])
+                        doc_info = vk.docs.getById(docs=f'{owner_id}_{doc_id}')
+                        items = doc_info.get('items') or []
+                        if items:
+                            result.append({'type': 'doc', 'doc': items[0]})
+                except Exception:
+                    traceback.print_exc()
+            i += 1
+        return result
+
+    return []
 
 
 def main():
@@ -1752,7 +1754,7 @@ def main():
             st = get_state(user_id)
             if st.get('awaiting') == 'csv_import':
                 atts = _extract_attachments(event)
-                docs = [a for a in atts if a.get('type') == 'doc']
+                docs = [a for a in atts if isinstance(a, dict) and a.get('type') == 'doc']
                 if docs:
                     try: handle_csv_attachment(user_id, docs)
                     except Exception:
