@@ -352,14 +352,15 @@ def main_menu(is_admin=False, morning_on=True):
     kb.add_button('➕ Добавить погрузку', color=VkKeyboardColor.POSITIVE)
     kb.add_line()
     kb.add_button('📋 Сегодня', color=VkKeyboardColor.PRIMARY)
+    kb.add_button('🖼 Картинка дня', color=VkKeyboardColor.PRIMARY)
+    kb.add_line()
     kb.add_button('📋 Завтра', color=VkKeyboardColor.PRIMARY)
-    kb.add_line()
     kb.add_button('📅 Другая дата', color=VkKeyboardColor.SECONDARY)
+    kb.add_line()
     kb.add_button('📊 Статистика', color=VkKeyboardColor.SECONDARY)
-    kb.add_line()
     kb.add_button('📁 Клиенты', color=VkKeyboardColor.SECONDARY)
-    kb.add_button('❓ Помощь', color=VkKeyboardColor.SECONDARY)
     kb.add_line()
+    kb.add_button('❓ Помощь', color=VkKeyboardColor.SECONDARY)
     label = '🔔 Сводка: вкл' if morning_on else '🔕 Сводка: выкл'
     kb.add_button(label, color=VkKeyboardColor.SECONDARY)
     if is_admin:
@@ -521,6 +522,9 @@ def day_actions(shipments, d_iso):
         if i % 5 == 4 and i != len(shipments) - 1:
             kb.add_line()
     if shipments: kb.add_line()
+    kb.add_button('🖼 Картинкой', color=VkKeyboardColor.PRIMARY,
+                  payload=_p(cmd='day_image', date=d_iso))
+    kb.add_line()
     kb.add_button('➕ Добавить', color=VkKeyboardColor.POSITIVE,
                   payload=_p(cmd='add_again_for', date=d_iso))
     kb.add_button('🏠 В меню', color=VkKeyboardColor.SECONDARY, payload=_p(cmd='to_menu'))
@@ -753,6 +757,7 @@ def show_help(user_id):
         "🤖 Бот учёта отгрузок склада\n\n"
         "• ➕ Добавлять погрузки\n"
         "• 📋 Показывать погрузки на день\n"
+        "• 🖼 Картинка дня — красивая сводка\n"
         "• ✏️ Изменять и удалять отгрузки\n"
         "• 📊 Статистика за любой период\n"
         "• 📁 Справочник клиентов\n"
@@ -874,6 +879,123 @@ def show_stats(user_id, period=None, start=None, end=None):
     send(user_id, format_stats(title, stats), main_menu(is_admin(user_id)))
 
 
+# ════════════════════════════ КАРТИНКА ДНЯ ════════════════════════════
+
+def make_day_image_png(d, shipments):
+    """Рисует PNG-картинку с погрузками на день."""
+    date_str = ru_date(d)
+
+    # считаем итоги
+    total_t = sum(s['tonnage'] for s in shipments)
+    total_trucks = round(total_t / TRUCK_CAPACITY, 2)
+
+    # размер фигуры — выше, если много клиентов
+    rows = len(shipments) if shipments else 1
+    height = max(6, 1.5 + rows * 0.45)
+    fig, ax = plt.subplots(figsize=(10, height))
+    ax.axis('off')
+
+    # ── Заголовок ──
+    ax.text(0.5, 1.0, f"📋 Погрузки на {date_str}",
+            ha='center', va='top', fontsize=20, fontweight='bold',
+            color='#1a3d63', transform=ax.transAxes)
+
+    # ── Подзаголовок с итогами ──
+    summary = f"Всего: {fmt_num(total_t)} т   |   {fmt_num(total_trucks)} фур   |   {len(shipments)} отгрузок"
+    ax.text(0.5, 0.94, summary,
+            ha='center', va='top', fontsize=12, color='#4a76a8',
+            transform=ax.transAxes)
+
+    if not shipments:
+        ax.text(0.5, 0.5, "— нет погрузок —",
+                ha='center', va='center', fontsize=16, color='#999',
+                transform=ax.transAxes)
+    else:
+        # ── Таблица ──
+        y_start = 0.86
+        row_h = 0.03 + (0.42 / max(len(shipments), 1))
+        # ограничим высоту строки
+        row_h = min(row_h, 0.06)
+
+        for i, s in enumerate(shipments):
+            y = y_start - i * row_h
+
+            # фон полосы (чередование)
+            if i % 2 == 0:
+                ax.add_patch(plt.Rectangle((0.03, y - row_h * 0.45),
+                                           0.94, row_h * 0.9,
+                                           transform=ax.transAxes,
+                                           facecolor='#f0f4f9',
+                                           edgecolor='none'))
+
+            # номер
+            ax.text(0.05, y, f"{i+1}.",
+                    ha='left', va='center', fontsize=11,
+                    color='#999', transform=ax.transAxes)
+
+            # клиент
+            name = s['client_name']
+            if len(name) > 55:
+                name = name[:52] + "…"
+            ax.text(0.09, y, name,
+                    ha='left', va='center', fontsize=12,
+                    color='#1a3d63', transform=ax.transAxes)
+
+            # тоннаж + фуры
+            weight_str = (f"{fmt_num(s['tonnage'])} т  "
+                          f"({fmt_num(s['trucks'])} фур)")
+            ax.text(0.97, y, weight_str,
+                    ha='right', va='center', fontsize=12, fontweight='bold',
+                    color='#4a76a8', transform=ax.transAxes)
+
+            # если есть комментарий — вторая строка
+            if s.get('comment'):
+                cmt = s['comment']
+                if len(cmt) > 60: cmt = cmt[:57] + "…"
+                ax.text(0.09, y - row_h * 0.35, f"💬 {cmt}",
+                        ha='left', va='center', fontsize=9,
+                        color='#777', style='italic',
+                        transform=ax.transAxes)
+
+        # ── Итоговая строка внизу ──
+        footer_y = 0.06
+        ax.add_patch(plt.Rectangle((0.03, footer_y - 0.02),
+                                   0.94, 0.05,
+                                   transform=ax.transAxes,
+                                   facecolor='#4a76a8',
+                                   edgecolor='none'))
+        ax.text(0.5, footer_y + 0.005,
+                f"ИТОГО:  {fmt_num(total_t)} т   |   {fmt_num(total_trucks)} фур   |   {len(shipments)} отгрузок",
+                ha='center', va='center', fontsize=13, fontweight='bold',
+                color='white', transform=ax.transAxes)
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=110, bbox_inches='tight',
+                facecolor='white')
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
+def show_day_image(user_id, d):
+    """Отправляет картинку с погрузками на день."""
+    shipments = get_shipments_by_date(d)
+    png = make_day_image_png(d, shipments)
+    try:
+        attach = upload_photo_bytes(user_id, png)
+        total_t = sum(s['tonnage'] for s in shipments)
+        total_trucks = round(total_t / TRUCK_CAPACITY, 2)
+        caption = (f"🖼 Погрузки на {ru_date(d)}\n\n"
+                   f"Итого: {fmt_num(total_t)} т, {fmt_num(total_trucks)} фур, "
+                   f"{len(shipments)} отгрузок")
+        send(user_id, caption, main_menu(is_admin(user_id)), attachment=attach)
+    except Exception as e:
+        traceback.print_exc()
+        send(user_id, f"❌ Не удалось отправить картинку: {e}",
+             main_menu(is_admin(user_id)))
+
+
 # ════════════════════════════ ИМПОРТ ════════════════════════════
 
 def _split_line(line):
@@ -969,17 +1091,7 @@ def _import_rows(user_id, rows):
 def import_1c_data(user_id, rows):
     """
     Импорт из 1С «Выполнение сборки и отгрузки товаров».
-
-    Структура файла:
-      A: клиент/служебное
-      B..F: служебные колонки (обычно пустые у клиента)
-      G: служебная колонка «Отгружено» (по ней обычно пусто)
-      H: вес нетто, кг (число вида 12 569,800)
-
-    Логика:
-      - служебные строки — пропуск
-      - «Расходный ордер ...», «Акт С/М ...», строки с артикулами — пропуск
-      - всё остальное — КЛИЕНТ, вес берём из колонки H (r[7])
+    Вес нетто — в колонке H (индекс 7).
     """
     n = len(rows)
     imported = 0
@@ -993,7 +1105,6 @@ def import_1c_data(user_id, rows):
         'склад', 'получатель', 'регистратор', 'артикул', 'итого',
     )
 
-    # диагностика в ВК — первые 10 непустых строк
     diag_lines = ["🔬 Диагностика файла (первые 10 строк):", ""]
     shown = 0
     for r in rows:
@@ -1020,7 +1131,6 @@ def import_1c_data(user_id, rows):
             if len(r) < 8:
                 r = r + [None] * (8 - len(r))
             a = r[0]
-            # Вес в колонке H (8-я), т.е. индекс 7
             h = r[7] if len(r) > 7 else None
 
             a_str = str(a).strip() if a is not None else ''
@@ -1037,7 +1147,6 @@ def import_1c_data(user_id, rows):
             if a_str.replace('.', '').replace(',', '').replace(' ', '').isdigit():
                 continue
 
-            # вес именно из H. Если H пусто — ищем числовое значение справа налево
             weight_cell = h
             if weight_cell is None or str(weight_cell).strip() == '':
                 for cell in reversed(r):
@@ -1048,23 +1157,19 @@ def import_1c_data(user_id, rows):
                         break
 
             if weight_cell is None:
-                skipped += 1
-                continue
+                skipped += 1; continue
 
             g_str = str(weight_cell).replace(',', '.').replace(' ', '').strip()
             if not g_str:
-                skipped += 1
-                continue
+                skipped += 1; continue
 
             try:
                 weight_kg = float(g_str)
             except ValueError:
-                skipped += 1
-                continue
+                skipped += 1; continue
 
             if weight_kg <= 0:
-                skipped += 1
-                continue
+                skipped += 1; continue
 
             weight_t = round(weight_kg / 1000.0, 3)
 
@@ -1073,8 +1178,7 @@ def import_1c_data(user_id, rows):
             while j < n:
                 rj = rows[j]
                 if not rj:
-                    j += 1
-                    continue
+                    j += 1; continue
                 aj = str(rj[0]).strip() if rj[0] is not None else ''
                 aj_low = aj.lower()
                 if 'расходный ордер' in aj_low:
@@ -1474,6 +1578,16 @@ def handle_payload(user_id, payload):
                 show_main_menu(user_id)
         else:
             show_main_menu(user_id)
+    elif cmd == 'day_image':
+        d = payload.get('date')
+        if d:
+            try:
+                show_day_image(user_id, datetime.strptime(d, '%Y-%m-%d').date())
+            except Exception:
+                traceback.print_exc()
+                show_main_menu(user_id)
+        else:
+            show_day_image(user_id, tz_today())
     elif cmd == 'toggle_report':
         new_val = toggle_morning_report(user_id)
         label = 'включена' if new_val else 'выключена'
@@ -1735,7 +1849,8 @@ def _period_bounds(period):
 
 MAIN_MENU_BUTTONS = {
     '➕ Добавить погрузку', '📋 Сегодня', '📋 Завтра', '📅 Другая дата',
-    '📊 Статистика', '📁 Клиенты', '❓ Помощь', '⚙️ Настройки'
+    '📊 Статистика', '📁 Клиенты', '❓ Помощь', '⚙️ Настройки',
+    '🖼 Картинка дня'
 }
 
 
@@ -1914,6 +2029,8 @@ def handle_text(user_id, text):
         start_add(user_id)
     elif text == '📋 Сегодня':
         show_day_shipments(user_id, tz_today())
+    elif text == '🖼 Картинка дня':
+        show_day_image(user_id, tz_today())
     elif text == '📋 Завтра':
         show_day_shipments(user_id, tz_today() + timedelta(days=1))
     elif text == '📅 Другая дата':
@@ -1957,11 +2074,26 @@ def morning_report_loop():
                     if not u.get('morning_report'): continue
                     uid = u['user_id']
                     try:
+                        # Текстовая сводка
                         shipments = get_shipments_by_date(n.date())
                         text = format_day_shipments(
                             n.date(), shipments,
                             f"🌅 Доброе утро! Погрузки на сегодня ({ru_date(n.date())}):")
                         send(uid, text, main_menu(is_admin(uid)))
+
+                        # И картинка
+                        try:
+                            png = make_day_image_png(n.date(), shipments)
+                            attach = upload_photo_bytes(uid, png)
+                            total_t = sum(s['tonnage'] for s in shipments)
+                            total_trucks = round(total_t / TRUCK_CAPACITY, 2)
+                            caption = (f"🖼 Сводка на {ru_date(n.date())}\n"
+                                       f"Итого: {fmt_num(total_t)} т, "
+                                       f"{fmt_num(total_trucks)} фур")
+                            send(uid, caption, main_menu(is_admin(uid)),
+                                 attachment=attach)
+                        except Exception:
+                            traceback.print_exc()
                     except Exception:
                         traceback.print_exc()
         except Exception:
