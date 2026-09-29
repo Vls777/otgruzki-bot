@@ -42,7 +42,7 @@ MORNING_REPORT_HOUR = 8
 MORNING_REPORT_MINUTE = 0
 BACKUP_HOUR = 23
 BACKUP_MINUTE = 0
-BACKUP_KEEP = 30
+BACKUP_KEEP = 60
 
 DATA_DIR = '/app/data'
 DB_PATH = os.path.join(DATA_DIR, 'shipments.db')
@@ -210,6 +210,23 @@ def delete_shipment(shipment_id):
         conn.execute("DELETE FROM shipments WHERE id=?", (shipment_id,))
 
 
+def delete_shipments_period(start_iso, end_iso):
+    """Удаляет все отгрузки за период (включительно). Возвращает кол-во."""
+    with get_db() as conn:
+        cur = conn.execute("""DELETE FROM shipments
+            WHERE shipment_date BETWEEN ? AND ?""",
+            (start_iso, end_iso))
+        return cur.rowcount
+
+
+def count_shipments_period(start_iso, end_iso):
+    with get_db() as conn:
+        row = conn.execute("""SELECT COUNT(*) as c FROM shipments
+            WHERE shipment_date BETWEEN ? AND ?""",
+            (start_iso, end_iso)).fetchone()
+        return row['c'] if row else 0
+
+
 def get_shipments_by_date(d):
     if isinstance(d, date): d = d.strftime("%Y-%m-%d")
     with get_db() as conn:
@@ -279,17 +296,46 @@ def week_comparison():
             'last_range': (last_start, last_end)}
 
 
-def make_backup():
+# ─────────── БЭКАПЫ ───────────
+
+def make_backup(reason='auto'):
     os.makedirs(BACKUP_DIR, exist_ok=True)
     if not os.path.exists(DB_PATH): return None
     stamp = tz_now().strftime('%Y-%m-%d_%H-%M-%S')
-    dst = os.path.join(BACKUP_DIR, f'shipments_{stamp}.db')
+    safe_reason = re.sub(r'[^a-zA-Z0-9_-]', '_', reason)[:20]
+    dst = os.path.join(BACKUP_DIR, f'shipments_{stamp}_{safe_reason}.db')
     shutil.copy2(DB_PATH, dst)
     files = sorted(f for f in os.listdir(BACKUP_DIR) if f.startswith('shipments_'))
     for old in files[:-BACKUP_KEEP]:
         try: os.remove(os.path.join(BACKUP_DIR, old))
         except OSError: pass
     return dst
+
+
+def list_backups(limit=200):
+    if not os.path.isdir(BACKUP_DIR): return []
+    files = sorted((f for f in os.listdir(BACKUP_DIR) if f.startswith('shipments_')),
+                   reverse=True)
+    result = []
+    for f in files[:limit]:
+        path = os.path.join(BACKUP_DIR, f)
+        try: size = os.path.getsize(path)
+        except OSError: size = 0
+        result.append({'name': f, 'path': path, 'size': size})
+    return result
+
+
+def restore_backup(name):
+    src = os.path.join(BACKUP_DIR, name)
+    if not os.path.exists(src):
+        return False, "Файл бэкапа не найден"
+    try:
+        if os.path.exists(DB_PATH):
+            make_backup('before-restore')
+        shutil.copy2(src, DB_PATH)
+        return True, None
+    except Exception as e:
+        return False, str(e)
 
 
 def get_db_bytes():
@@ -489,6 +535,11 @@ def admin_menu():
     kb.add_button('📥 Импорт Excel (1С)', color=VkKeyboardColor.PRIMARY,
                   payload=_p(cmd='import_csv'))
     kb.add_line()
+    kb.add_button('↩️ Откатить базу', color=VkKeyboardColor.NEGATIVE,
+                  payload=_p(cmd='rollback_menu'))
+    kb.add_button('🗑 Очистить период', color=VkKeyboardColor.NEGATIVE,
+                  payload=_p(cmd='clear_period'))
+    kb.add_line()
     kb.add_button('💾 Скачать базу', color=VkKeyboardColor.PRIMARY,
                   payload=_p(cmd='download_db'))
     kb.add_button('📤 CSV (всё)', color=VkKeyboardColor.SECONDARY,
@@ -498,6 +549,55 @@ def admin_menu():
                   payload=_p(cmd='stats', period='custom'))
     kb.add_button('⚖️ Сравнить недели', color=VkKeyboardColor.POSITIVE,
                   payload=_p(cmd='week_compare'))
+    kb.add_line()
+    kb.add_button('🏠 В меню', color=VkKeyboardColor.SECONDARY, payload=_p(cmd='to_menu'))
+    return kb.get_keyboard()
+
+
+def rollback_menu(backups, page=0, per_page=6):
+    kb = VkKeyboard(inline=True)
+    start = page * per_page
+    chunk = backups[start:start + per_page]
+    for b in chunk:
+        name = b['name']
+        m = re.match(r'shipments_(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})_(.+)\.db', name)
+        if m:
+            label = f"{m.group(1)} {m.group(2).replace('-',':')} {m.group(3)[:8]}"
+        else:
+            label = name[-30:]
+        kb.add_button(label, color=VkKeyboardColor.SECONDARY,
+                      payload=_p(cmd='restore_backup', name=name))
+        kb.add_line()
+    nav = []
+    if page > 0:
+        nav.append(('⬅️', _p(cmd='rollback_page', page=page - 1)))
+    if start + per_page < len(backups):
+        nav.append(('➡️', _p(cmd='rollback_page', page=page + 1)))
+    if nav:
+        for label, pl in nav:
+            kb.add_button(label, color=VkKeyboardColor.SECONDARY, payload=pl)
+        kb.add_line()
+    kb.add_button('🏠 В меню', color=VkKeyboardColor.SECONDARY, payload=_p(cmd='to_menu'))
+    kb.add_button('❌ Отмена', color=VkKeyboardColor.NEGATIVE, payload=_p(cmd='cancel'))
+    return kb.get_keyboard()
+
+
+def clear_period_menu():
+    kb = VkKeyboard(inline=True)
+    kb.add_button('Сегодня', color=VkKeyboardColor.NEGATIVE,
+                  payload=_p(cmd='clear_period_confirm', period='today'))
+    kb.add_button('Вчера', color=VkKeyboardColor.NEGATIVE,
+                  payload=_p(cmd='clear_period_confirm', period='yesterday'))
+    kb.add_line()
+    kb.add_button('Эта неделя', color=VkKeyboardColor.NEGATIVE,
+                  payload=_p(cmd='clear_period_confirm', period='week'))
+    kb.add_button('Этот месяц', color=VkKeyboardColor.NEGATIVE,
+                  payload=_p(cmd='clear_period_confirm', period='month'))
+    kb.add_line()
+    kb.add_button('Этот год', color=VkKeyboardColor.NEGATIVE,
+                  payload=_p(cmd='clear_period_confirm', period='year'))
+    kb.add_button('📅 Произвольно', color=VkKeyboardColor.NEGATIVE,
+                  payload=_p(cmd='clear_period_confirm', period='custom'))
     kb.add_line()
     kb.add_button('🏠 В меню', color=VkKeyboardColor.SECONDARY, payload=_p(cmd='to_menu'))
     kb.add_button('❌ Отмена', color=VkKeyboardColor.NEGATIVE, payload=_p(cmd='cancel'))
@@ -624,1185 +724,4 @@ def format_day_shipments(d, shipments, title=None):
 def format_stats(title, stats):
     lines = [f"📊 {title}", ""]
     if stats['count'] == 0:
-        lines.append("Нет отгрузок за период."); return "\n".join(lines)
-    lines.append(f"Всего отгрузок: {stats['count']}")
-    lines.append(f"Общий тоннаж: {fmt_num(stats['total_tonnage'])} т")
-    lines.append(f"Фур: {fmt_num(stats['total_trucks'])} "
-                 f"({fmt_num(stats['total_tonnage'])} ÷ {fmt_num(TRUCK_CAPACITY)})")
-    lines.append("")
-    lines.append("👥 По клиентам:")
-    for name, c in sorted(stats['by_client'].items(), key=lambda x: -x[1]['tonnage'])[:30]:
-        lines.append(f"• {name}: {fmt_num(c['tonnage'])} т / {fmt_num(c['trucks'])} фур")
-    lines.append("")
-    lines.append("📅 По дням:")
-    for d in sorted(stats['by_day'].keys(), reverse=True)[:30]:
-        c = stats['by_day'][d]
-        lines.append(f"• {ru_date(d)}: {fmt_num(c['tonnage'])} т / {fmt_num(c['trucks'])} фур")
-    return "\n".join(lines)
-
-
-# ════════════════════════════ МЕНЮ ════════════════════════════
-
-def show_main_menu(user_id):
-    u = next((x for x in get_all_users() if x['user_id'] == user_id), None)
-    morning_on = bool(u and u.get('morning_report'))
-    send(user_id, "Главное меню:", main_menu(is_admin(user_id), morning_on))
-
-
-def show_help(user_id):
-    text = (
-        "🤖 Бот учёта отгрузок склада\n\n"
-        "• ➕ Добавлять погрузки\n"
-        "• 📋 Показывать погрузки на день\n"
-        "• ✏️ Изменять и удалять отгрузки\n"
-        "• 📊 Статистика за любой период\n"
-        "• 📁 Справочник клиентов\n"
-        "• 🔔 Утренняя сводка\n"
-        "• 📥 Импорт Excel из 1С\n\n"
-        f"🚛 Фур = тоннаж ÷ {fmt_num(TRUCK_CAPACITY)}\n"
-        f"🕐 Часовой пояс: Уфа (UTC+{TIMEZONE_OFFSET_HOURS})\n\n"
-        "💡 Прервать любое действие — кнопка меню внизу или /отмена."
-    )
-    send(user_id, text, main_menu(is_admin(user_id)))
-
-
-# ════════════════════════════ ДОБАВЛЕНИЕ ════════════════════════════
-
-def start_add(user_id):
-    clear_state(user_id)
-    send(user_id, "📅 На какую дату добавить погрузку?", date_choice_menu())
-
-
-def start_add_with_date(user_id, d_iso):
-    clear_state(user_id)
-    set_state(user_id, pending={'date': d_iso})
-    show_client_picker(user_id, action='add')
-
-
-def show_client_picker(user_id, action='add', sid=None, page=0):
-    clients = get_clients()
-    if not clients:
-        update_state(user_id, awaiting='new_client_name', action=action, sid=sid)
-        send(user_id, "📁 Справочник пуст. Введите имя первого клиента:", cancel_menu())
-        return
-    send(user_id, "👤 Выберите клиента:",
-         clients_menu(clients, action=action, sid=sid, page=page))
-
-
-def show_confirm(user_id):
-    p = get_state(user_id).get('pending', {})
-    if not (p.get('date') and p.get('client') and p.get('tonnage')):
-        send(user_id, "❌ Недостаточно данных.")
-        clear_state(user_id); show_main_menu(user_id); return
-    trucks = calc_trucks(p['tonnage'])
-    text = ("Проверьте данные:\n\n"
-            f"📅 Дата: {ru_date(p['date'])}\n"
-            f"👤 Клиент: {p['client']}\n"
-            f"⚖️ Тоннаж: {fmt_num(p['tonnage'])} т\n"
-            f"🚛 Фур: {fmt_num(trucks)} ({fmt_num(p['tonnage'])} ÷ {fmt_num(TRUCK_CAPACITY)})\n")
-    if p.get('comment'):
-        text += f"💬 Комментарий: {p['comment']}\n"
-    send(user_id, text, confirm_menu())
-
-
-def on_save_shipment(user_id):
-    p = get_state(user_id).get('pending', {})
-    if not (p.get('date') and p.get('client') and p.get('tonnage')):
-        send(user_id, "❌ Недостаточно данных.")
-        clear_state(user_id); show_main_menu(user_id); return
-    sid = add_shipment(p['client'], p['tonnage'], p['date'], user_id,
-                       comment=p.get('comment', ''))
-    s = get_shipment(sid)
-    d_iso = p['date']
-    clear_state(user_id)
-    set_state(user_id, pending={'date': d_iso})
-    send(user_id, f"✅ Погрузка добавлена!\n\n{format_shipment_card(s)}",
-         after_save_menu())
-
-
-# ════════════════════════════ ПРОСМОТР ДНЯ ════════════════════════════
-
-def show_day_shipments(user_id, d):
-    shipments = get_shipments_by_date(d)
-    text = format_day_shipments(d, shipments)
-    send(user_id, text, day_actions(shipments, d.isoformat()))
-
-
-def on_open_shipment(user_id, payload):
-    sid = payload.get('sid')
-    s = get_shipment(sid)
-    if not s:
-        send(user_id, "❌ Отгрузка не найдена.", main_menu(is_admin(user_id))); return
-    send(user_id, format_shipment_card(s),
-         shipment_item_menu(sid, s['shipment_date'], allow_delete=is_admin(user_id)))
-
-
-# ════════════════════════════ СТАТИСТИКА ════════════════════════════
-
-def show_stats(user_id, period=None, start=None, end=None):
-    today = tz_today()
-    if period == 'today':
-        s, e = today, today; title = f"Сегодня ({ru_date(today)})"
-    elif period == 'yesterday':
-        y = today - timedelta(days=1); s, e = y, y; title = f"Вчера ({ru_date(y)})"
-    elif period == 'week':
-        s = today - timedelta(days=today.weekday()); e = today
-        title = f"Эта неделя ({ru_date(s)}–{ru_date(e)})"
-    elif period == 'last_week':
-        s = today - timedelta(days=today.weekday() + 7); e = s + timedelta(days=6)
-        title = f"Прошлая неделя ({ru_date(s)}–{ru_date(e)})"
-    elif period == 'month':
-        s = today.replace(day=1); e = today
-        title = f"Этот месяц ({ru_date(s)}–{ru_date(e)})"
-    elif period == 'last_month':
-        first = today.replace(day=1); e = first - timedelta(days=1)
-        s = e.replace(day=1); title = f"Прошлый месяц ({ru_date(s)}–{ru_date(e)})"
-    elif period == 'year':
-        s = today.replace(month=1, day=1); e = today
-        title = f"Этот год ({ru_date(s)}–{ru_date(e)})"
-    elif period == 'custom':
-        try:
-            s = datetime.strptime(start, '%Y-%m-%d').date()
-            e = datetime.strptime(end, '%Y-%m-%d').date()
-        except Exception:
-            send(user_id, "Ошибка в датах."); return
-        title = f"Период {ru_date(s)}–{ru_date(e)}"
-    else:
-        send(user_id, "Выберите период:", stats_menu()); return
-    stats = stats_for_period(s, e)
-    send(user_id, format_stats(title, stats), main_menu(is_admin(user_id)))
-
-
-# ════════════════════════════ ИМПОРТ ════════════════════════════
-
-def _split_line(line):
-    if '\t' in line: return [p.strip() for p in line.split('\t')]
-    if '|' in line: return [p.strip() for p in line.split('|')]
-    if ';' in line: return [p.strip() for p in line.split(';')]
-    if ',' in line: return [p.strip() for p in line.split(',')]
-    parts = re.split(r'\s{2,}', line)
-    if len(parts) >= 3: return [p.strip() for p in parts]
-    return [p.strip() for p in line.split()]
-
-
-def import_from_text(user_id, text):
-    lines = [ln for ln in text.splitlines() if ln.strip()]
-    if not lines: return 0, 0, ["Пустое сообщение"]
-    first_low = lines[0].lower()
-    has_header = ('клиент' in first_low or 'контрагент' in first_low or
-                  'дата' in first_low or 'тонн' in first_low)
-    imported = skipped = 0
-    errors = []
-    start_idx = 1 if has_header else 0
-    for rn, line in enumerate(lines[start_idx:], start=start_idx + 1):
-        try:
-            parts = _split_line(line)
-            if len(parts) < 3:
-                errors.append(f"Строка {rn}: нужно 3 колонки"); skipped += 1; continue
-            client = parts[0].strip()
-            date_str = parts[1].strip()
-            tonnage_str = parts[2].strip().replace(',', '.').replace(' ', '')
-            if not client or not tonnage_str:
-                skipped += 1; continue
-            d = parse_month_or_date(date_str)
-            if not d:
-                errors.append(f"Строка {rn}: не понял дату '{date_str}'"); skipped += 1; continue
-            tonnage = float(tonnage_str)
-            if tonnage <= 0: raise ValueError("тоннаж <= 0")
-            add_shipment(client, tonnage, d.isoformat(), user_id, comment='импорт')
-            imported += 1
-        except Exception as e:
-            errors.append(f"Строка {rn}: {e}"); skipped += 1
-    return imported, skipped, errors
-
-
-def _import_rows(user_id, rows):
-    """Обычный формат: Клиент | Дата | Тоннаж."""
-    if not rows or len(rows) < 2:
-        return 0, 0, ["Нужна хотя бы одна строка данных"]
-    header = [str(h or '').strip().lower() for h in rows[0]]
-    idx_client = idx_date = idx_tonnage = None
-    for i, h in enumerate(header):
-        if idx_client is None and ('клиент' in h or 'контрагент' in h or
-                                    'наименование' in h or h == 'client'):
-            idx_client = i
-        elif idx_date is None and ('дата' in h or 'месяц' in h or
-                                    'период' in h or h in ('date', 'month')):
-            idx_date = i
-        elif idx_tonnage is None and ('тонн' in h or 'вес' in h or
-                                       'масса' in h or h in ('tonnage', 'weight')):
-            idx_tonnage = i
-    if idx_client is None or idx_date is None or idx_tonnage is None:
-        if len(header) >= 3:
-            idx_client, idx_date, idx_tonnage = 0, 1, 2
-        else:
-            return 0, 0, ["Не удалось определить колонки"]
-    imported = skipped = 0
-    errors = []
-    for rn, r in enumerate(rows[1:], start=2):
-        try:
-            if r is None or len(r) <= max(idx_client, idx_date, idx_tonnage):
-                skipped += 1; continue
-            def _cell(v):
-                if v is None: return ''
-                if isinstance(v, datetime): return v
-                return str(v).strip()
-            client = _cell(r[idx_client])
-            date_raw = r[idx_date]
-            tonnage_raw = _cell(r[idx_tonnage]).replace(',', '.').replace(' ', '')
-            if not client or tonnage_raw == '':
-                skipped += 1; continue
-            if isinstance(date_raw, datetime): d = date_raw.date()
-            elif isinstance(date_raw, date): d = date_raw
-            else: d = parse_month_or_date(_cell(date_raw))
-            if not d:
-                errors.append(f"Строка {rn}: не понял дату"); skipped += 1; continue
-            tonnage = float(tonnage_raw)
-            if tonnage <= 0: raise ValueError("тоннаж <= 0")
-            add_shipment(client, tonnage, d.isoformat(), user_id, comment='импорт')
-            imported += 1
-        except Exception as e:
-            errors.append(f"Строка {rn}: {e}"); skipped += 1
-    return imported, skipped, errors
-
-
-def import_1c_data(user_id, rows):
-    """Парсит выгрузку из 1С «Выполнение сборки и отгрузки товаров»."""
-    n = len(rows)
-    next_nonempty = [None] * n
-    last = None
-    for i in range(n - 1, -1, -1):
-        next_nonempty[i] = last
-        r = rows[i]
-        if r and any(c is not None and str(c).strip() for c in r):
-            last = r
-
-    imported = 0
-    skipped = 0
-    errors = []
-    current_client = None
-    date_re = re.compile(r'от\s+(\d{2}\.\d{2}\.\d{4})')
-
-    for idx, row in enumerate(rows):
-        rn = idx + 1
-        try:
-            if not row: continue
-            r = list(row)
-            if len(r) < 7: r = r + [None] * (7 - len(r))
-            a = r[0]; b = r[1] if len(r) > 1 else None
-            f = r[5] if len(r) > 5 else None
-            g = r[6] if len(r) > 6 else None
-            a_str = str(a).strip() if a is not None else ''
-            if not a_str: continue
-            a_low = a_str.lower()
-
-            if (a_low.startswith('выполнение сборки') or
-                a_low.startswith('параметры') or a_low.startswith('отбор') or
-                a_low in ('склад', 'получатель', 'регистратор', 'артикул', 'итого')):
-                continue
-
-            if 'расходный ордер' in a_low:
-                if current_client is None:
-                    skipped += 1; continue
-                m = date_re.search(a_str)
-                if not m:
-                    skipped += 1; continue
-                try:
-                    d = datetime.strptime(m.group(1), '%d.%m.%Y').date()
-                except ValueError:
-                    errors.append(f"Строка {rn}: плохая дата"); skipped += 1; continue
-                g_str = str(g).replace(',', '.').replace(' ', '').strip() if g is not None else ''
-                if not g_str:
-                    skipped += 1; continue
-                try:
-                    weight_kg = float(g_str)
-                except ValueError:
-                    skipped += 1; continue
-                weight_t = weight_kg / 1000.0
-                if weight_t <= 0:
-                    skipped += 1; continue
-                add_shipment(current_client, round(weight_t, 3), d.isoformat(),
-                             user_id, comment='1С')
-                imported += 1
-                continue
-
-            if a_str.replace('.', '').replace(',', '').replace(' ', '').isdigit():
-                continue
-
-            b_str = str(b).strip() if b is not None else ''
-            f_str = str(f).strip() if f is not None else ''
-            if b_str != '' or f_str != '':
-                continue
-
-            nr = next_nonempty[idx]
-            if nr is None: continue
-            nr_a = str(nr[0]).strip().lower() if nr[0] is not None else ''
-            if 'расходный ордер' in nr_a:
-                current_client = a_str
-
-        except Exception as e:
-            errors.append(f"Строка {rn}: {e}")
-            skipped += 1
-
-    return imported, skipped, errors
-
-
-def import_csv_data(user_id, data_bytes, filename=''):
-    name = (filename or '').lower()
-
-    if name.endswith('.xlsx') or name.endswith('.xlsm'):
-        try:
-            from openpyxl import load_workbook
-        except ImportError:
-            return 0, 0, ["Библиотека openpyxl не установлена"]
-        try:
-            wb = load_workbook(io.BytesIO(data_bytes), data_only=True)
-            ws = wb.active
-            rows = [list(r) for r in ws.iter_rows(values_only=True)]
-        except Exception as e:
-            return 0, 0, [f"Не удалось прочитать Excel: {e}"]
-
-        for r in rows[:300]:
-            if r and r[0] and 'расходный ордер' in str(r[0]).lower():
-                return import_1c_data(user_id, rows)
-        return _import_rows(user_id, rows)
-
-    if name.endswith('.xls'):
-        return 0, 0, ["Формат .xls не поддерживается. Сохраните как .xlsx"]
-
-    try:
-        text = data_bytes.decode('utf-8-sig')
-    except UnicodeDecodeError:
-        try: text = data_bytes.decode('cp1251')
-        except Exception: return 0, 0, ["Не удалось прочитать файл"]
-
-    lines = [ln for ln in text.splitlines() if ln.strip()]
-    if not lines: return 0, 0, ["Файл пуст"]
-
-    for ln in lines[:50]:
-        if 'расходный ордер' in ln.lower():
-            delim = ';' if ';' in lines[0] else ('\t' if '\t' in lines[0] else ',')
-            reader = list(csv.reader(lines, delimiter=delim))
-            return import_1c_data(user_id, reader)
-
-    first = lines[0]
-    if ';' in first: delim = ';'
-    elif '\t' in first: delim = '\t'
-    elif ',' in first: delim = ','
-    else: return 0, 0, ["Не найден разделитель"]
-    rows = list(csv.reader(lines, delimiter=delim))
-    return _import_rows(user_id, rows)
-
-
-def handle_csv_attachment(user_id, attachments):
-    for att in attachments:
-        if att.get('type') != 'doc':
-            continue
-        doc = att.get('doc') or {}
-        url = doc.get('url')
-        filename = doc.get('title', '')
-        if not url:
-            continue
-        send(user_id, f"📥 Скачиваю файл: {filename}")
-        try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=180) as resp:
-                data = resp.read()
-        except Exception as e:
-            send(user_id, f"❌ Не удалось скачать файл: {e}")
-            clear_state(user_id); return
-
-        send(user_id, "⚙️ Обрабатываю файл (может занять до минуты)...")
-        imported, skipped, errors = import_csv_data(user_id, data, filename)
-        clear_state(user_id)
-
-        result = [f"📥 Импорт завершён:", f"• Добавлено: {imported}"]
-        if skipped: result.append(f"• Пропущено: {skipped}")
-        if errors:
-            result.append(""); result.append("Примеры ошибок:")
-            result.extend(errors[:5])
-        result.append(""); result.append("Проверьте: 📊 Статистика → Этот год")
-        send(user_id, "\n".join(result), admin_menu())
-        return
-    send(user_id, "❌ Во вложении не найден файл.", admin_menu())
-    clear_state(user_id)
-
-
-# ════════════════════════════ ЭКСПОРТ ════════════════════════════
-
-def upload_csv_doc(user_id, data, filename):
-    fd, path = tempfile.mkstemp(suffix='.csv')
-    os.close(fd)
-    try:
-        with open(path, 'wb') as f: f.write(data)
-        upload = vk_api.VkUpload(vk_session)
-        resp = upload.document(path, filename, peer_id=user_id)
-        doc = resp.get('doc') if isinstance(resp, dict) else None
-        if not doc: raise RuntimeError(f"Некорректный ответ: {resp}")
-        return f"doc{doc['owner_id']}_{doc['id']}"
-    finally:
-        try: os.remove(path)
-        except Exception: pass
-
-
-def upload_photo_bytes(user_id, photo_bytes):
-    fd, path = tempfile.mkstemp(suffix='.png')
-    os.close(fd)
-    try:
-        with open(path, 'wb') as f: f.write(photo_bytes)
-        upload = vk_api.VkUpload(vk_session)
-        photo = upload.photo_messages(photos=path, peer_id=user_id)[0]
-        return f"photo{photo['owner_id']}_{photo['id']}"
-    finally:
-        try: os.remove(path)
-        except Exception: pass
-
-
-def on_export_csv(user_id, days=30):
-    end = tz_today()
-    if days is None:
-        shipments = get_shipments_by_period(date(2000, 1, 1), end)
-        title = "Полный экспорт"
-        fname = f'shipments_all_{end.isoformat()}.csv'
-    else:
-        start = end - timedelta(days=days)
-        shipments = get_shipments_by_period(start, end)
-        title = f"Экспорт за последние {days} дней"
-        fname = f'shipments_{start.isoformat()}_{end.isoformat()}.csv'
-    if not shipments:
-        send(user_id, "Нет данных.", admin_menu()); return
-    buf = io.StringIO()
-    w = csv.writer(buf, delimiter=';')
-    w.writerow(['ID', 'Дата', 'Клиент', 'Тоннаж (т)', 'Фур (расчёт)', 'Комментарий', 'Создано'])
-    for s in shipments:
-        w.writerow([s['id'], s['shipment_date'], s['client_name'],
-                    s['tonnage'], s['trucks'], s.get('comment', ''),
-                    s.get('created_at', '')])
-    data = buf.getvalue().encode('utf-8-sig')
-    try:
-        attach = upload_csv_doc(user_id, data, fname)
-        send(user_id, f"📤 {title} ({len(shipments)} строк):",
-             admin_menu() if is_admin(user_id) else main_menu(is_admin(user_id)),
-             attachment=attach)
-    except Exception as e:
-        traceback.print_exc()
-        send(user_id, f"❌ Не удалось загрузить файл: {e}", admin_menu())
-
-
-# ════════════════════════════ ИСТОРИЯ КЛИЕНТА ════════════════════════════
-
-def show_clients_for_history(user_id, page=0):
-    clients = get_clients()
-    if not clients:
-        send(user_id, "📁 Справочник пуст. Добавьте первую погрузку.",
-             main_menu(is_admin(user_id))); return
-    send(user_id, "👤 Выберите клиента:",
-         clients_menu(clients, action='view', page=page))
-
-
-def show_client_card(user_id, cid):
-    c = get_client(cid)
-    if not c:
-        send(user_id, "❌ Клиент не найден.", main_menu(is_admin(user_id))); return
-    summary = client_summary(c['name'])
-    if not summary:
-        send(user_id, f"👤 {c['name']}\n\nНет отгрузок.", client_card_menu(cid)); return
-    lines = [f"👤 {c['name']}", "",
-             f"Всего отгрузок: {summary['count']}",
-             f"Общий тоннаж: {fmt_num(summary['total_tonnage'])} т",
-             f"Фур: {fmt_num(summary['total_trucks'])}",
-             f"Средний тоннаж: {fmt_num(round(summary['avg_tonnage'], 2))} т", "",
-             f"Первая отгрузка: {ru_date(summary['first_date'])}",
-             f"Последняя: {ru_date(summary['last_date'])}"]
-    send(user_id, "\n".join(lines), client_card_menu(cid))
-
-
-def show_client_history(user_id, cid):
-    c = get_client(cid)
-    if not c:
-        send(user_id, "❌ Клиент не найден.", main_menu(is_admin(user_id))); return
-    shipments = get_shipments_by_client(c['name'], limit=100)
-    lines = [f"📜 {c['name']} — последние отгрузки:", ""]
-    if not shipments:
-        lines.append("— нет —")
-    else:
-        total_t = 0.0
-        for s in shipments:
-            lines.append(f"• {ru_date(s['shipment_date'])} — "
-                         f"{fmt_num(s['tonnage'])} т ({fmt_num(s['trucks'])} фур)")
-            total_t += s['tonnage']
-        lines += ["", f"Всего (последние {len(shipments)}): {fmt_num(total_t)} т"]
-    send(user_id, "\n".join(lines), client_card_menu(cid))
-
-
-# ════════════════════════════ СРАВНЕНИЕ НЕДЕЛЬ ════════════════════════════
-
-def show_week_comparison(user_id):
-    cmp = week_comparison()
-    this_s, last_s = cmp['this'], cmp['last']
-    t1, t0 = this_s['total_tonnage'], last_s['total_tonnage']
-    if t0 > 0:
-        diff_pct = (t1 - t0) / t0 * 100
-        pct_sign = '📈 +' if diff_pct >= 0 else '📉 '
-        pct_line = f"{pct_sign}{diff_pct:.1f}%"
-    else:
-        pct_line = "—" if t1 == 0 else "новая неделя"
-    diff_t = t1 - t0
-    diff_trucks = round(diff_t / TRUCK_CAPACITY, 2)
-    lines = ["⚖️ Сравнение недель", "",
-             f"Прошлая ({ru_date(cmp['last_range'][0])}–{ru_date(cmp['last_range'][1])}):",
-             f"  • {fmt_num(t0)} т",
-             f"  • {fmt_num(last_s['total_trucks'])} фур",
-             f"  • {last_s['count']} отгрузок", "",
-             f"Эта ({ru_date(cmp['this_range'][0])}–{ru_date(cmp['this_range'][1])}):",
-             f"  • {fmt_num(t1)} т",
-             f"  • {fmt_num(this_s['total_trucks'])} фур",
-             f"  • {this_s['count']} отгрузок", "",
-             f"Разница: {fmt_num(diff_t)} т ({pct_line})",
-             f"          {fmt_num(diff_trucks)} фур"]
-    send(user_id, "\n".join(lines), main_menu(is_admin(user_id)))
-
-
-# ════════════════════════════ ГРАФИКИ ════════════════════════════
-
-def make_chart_png(start, end, title, shipments):
-    by_day = defaultdict(float)
-    d = start
-    while d <= end:
-        by_day[d] = 0.0; d += timedelta(days=1)
-    for s in shipments:
-        day = datetime.strptime(s['shipment_date'], '%Y-%m-%d').date()
-        by_day[day] += s['tonnage']
-    dates = sorted(by_day.keys())
-    values = [by_day[d] for d in dates]
-    fig, ax = plt.subplots(figsize=(10, 5))
-    bars = ax.bar(dates, values, color='#4a76a8', edgecolor='#2c4a70')
-    ax.set_title(title, fontsize=14, fontweight='bold')
-    ax.set_ylabel('Тонны')
-    ax.grid(axis='y', linestyle='--', alpha=0.5)
-    ax.set_axisbelow(True)
-    for bar, v in zip(bars, values):
-        if v > 0:
-            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
-                    f'{v:.0f}', ha='center', va='bottom', fontsize=9)
-    if len(dates) > 7:
-        ax.xaxis.set_major_formatter(DateFormatter('%d.%m'))
-        plt.xticks(rotation=45, ha='right')
-    else:
-        ax.set_xticks(dates)
-        ax.set_xticklabels([d.strftime('%d.%m') for d in dates])
-    plt.tight_layout()
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
-    plt.close(fig); buf.seek(0)
-    return buf.read()
-
-
-def show_chart(user_id, period=None, start=None, end=None, client_name=None):
-    today = tz_today()
-    if client_name:
-        shipments = get_shipments_by_client(client_name, limit=2000)
-        if not shipments:
-            send(user_id, "Нет данных.", main_menu(is_admin(user_id))); return
-        dates = sorted(set(s['shipment_date'] for s in shipments))
-        s = datetime.strptime(dates[0], '%Y-%m-%d').date()
-        e = datetime.strptime(dates[-1], '%Y-%m-%d').date()
-        title = f"{client_name} — отгрузки ({ru_date(s)}–{ru_date(e)})"
-    else:
-        if period == 'week':
-            s = today - timedelta(days=today.weekday()); e = today
-            title = f"Отгрузки за неделю ({ru_date(s)}–{ru_date(e)})"
-        elif period == 'last_week':
-            s = today - timedelta(days=today.weekday() + 7); e = s + timedelta(days=6)
-            title = f"Отгрузки за прошлую неделю"
-        elif period == 'month':
-            s = today.replace(day=1); e = today
-            title = f"Отгрузки за месяц ({ru_date(s)}–{ru_date(e)})"
-        elif period == 'last_month':
-            first = today.replace(day=1); e = first - timedelta(days=1)
-            s = e.replace(day=1); title = f"Отгрузки за прошлый месяц"
-        elif period == 'custom':
-            s = datetime.strptime(start, '%Y-%m-%d').date()
-            e = datetime.strptime(end, '%Y-%m-%d').date()
-            title = f"Отгрузки {ru_date(s)}–{ru_date(e)}"
-        else:
-            s, e = today - timedelta(days=6), today
-            title = "Отгрузки за последние 7 дней"
-        shipments = get_shipments_by_period(s, e)
-    if not shipments:
-        send(user_id, "Нет данных за период.", main_menu(is_admin(user_id))); return
-    png = make_chart_png(s, e, title, shipments)
-    try:
-        attach = upload_photo_bytes(user_id, png)
-        total = sum(x['tonnage'] for x in shipments)
-        caption = (f"📈 {title}\n\n"
-                   f"Итого: {fmt_num(total)} т, "
-                   f"{fmt_num(round(total / TRUCK_CAPACITY, 2))} фур")
-        send(user_id, caption, main_menu(is_admin(user_id)), attachment=attach)
-    except Exception as e:
-        traceback.print_exc()
-        send(user_id, f"❌ Не удалось отправить график: {e}", main_menu(is_admin(user_id)))
-
-
-# ════════════════════════════ АДМИН ════════════════════════════
-
-def on_download_db(user_id):
-    if not is_admin(user_id):
-        send(user_id, "❌ Только для администраторов."); return
-    try:
-        data = get_db_bytes()
-        attach = upload_csv_doc(user_id, data, f'shipments_{tz_today().isoformat()}.db')
-        size_kb = len(data) / 1024
-        send(user_id, f"💾 Резервная копия базы ({size_kb:.1f} КБ):",
-             admin_menu(), attachment=attach)
-    except Exception as e:
-        traceback.print_exc()
-        send(user_id, f"❌ Не удалось отправить базу: {e}", admin_menu())
-
-
-def show_clients_info(user_id):
-    clients = get_clients(limit=200)
-    if not clients:
-        send(user_id, "📁 Справочник пуст. Добавьте первую погрузку.",
-             main_menu(is_admin(user_id))); return
-    lines = ["📁 Клиенты:", ""]
-    for c in clients[:50]:
-        sh = get_shipments_by_client(c['name'])
-        total_t = sum(s['tonnage'] for s in sh)
-        lines.append(f"• {c['name']}: {len(sh)} отгр., {fmt_num(total_t)} т")
-    if len(clients) > 50:
-        lines.append(f"\n… и ещё {len(clients) - 50}")
-    send(user_id, "\n".join(lines), main_menu(is_admin(user_id)))
-
-
-# ════════════════════════════ PAYLOAD ════════════════════════════
-
-def handle_payload(user_id, payload):
-    cmd = payload.get('cmd')
-
-    if cmd == 'cancel':
-        clear_state(user_id)
-        send(user_id, "Отменено.", main_menu(is_admin(user_id)))
-    elif cmd == 'to_menu':
-        clear_state(user_id)
-        show_main_menu(user_id)
-    elif cmd == 'back_to_day':
-        d = payload.get('date')
-        if d:
-            try:
-                show_day_shipments(user_id, datetime.strptime(d, '%Y-%m-%d').date())
-            except Exception:
-                show_main_menu(user_id)
-        else:
-            show_main_menu(user_id)
-    elif cmd == 'toggle_report':
-        new_val = toggle_morning_report(user_id)
-        label = 'включена' if new_val else 'выключена'
-        send(user_id, f"Утренняя сводка {label}.",
-             main_menu(is_admin(user_id), bool(new_val)))
-    elif cmd == 'import_text':
-        if not is_admin(user_id):
-            send(user_id, "❌ Только для администраторов."); return
-        update_state(user_id, awaiting='text_import')
-        text = ("✍️ Импорт текстом\n\n"
-                "Скопируйте данные из 1С или Excel и отправьте одним сообщением.\n\n"
-                "Формат строк:\nКлиент | Дата | Тоннаж\n\n"
-                "Например:\nООО Ромашка 01.2026 150\nООО Ромашка 02.2026 180\n\n"
-                "Дата: 01.2026, 15.01.2026, янв 2026.\n"
-                "Заголовок (Клиент Дата Тоннаж) — можно, бот пропустит.")
-        send(user_id, text, cancel_menu())
-    elif cmd == 'import_csv':
-        if not is_admin(user_id):
-            send(user_id, "❌ Только для администраторов."); return
-        update_state(user_id, awaiting='csv_import')
-        send(user_id, "📥 Отправьте файл .xlsx из 1С как документ (скрепка → Документ).",
-             cancel_menu())
-    elif cmd == 'pick_date':
-        d = payload.get('date')
-        if d == 'today': target = tz_today()
-        elif d == 'tomorrow': target = tz_today() + timedelta(days=1)
-        elif d == 'custom':
-            update_state(user_id, awaiting='add_custom_date')
-            send(user_id, "Введите дату (ДД.ММ.ГГГГ). Можно: 'сегодня', 'завтра', 'послезавтра'.",
-                 cancel_menu()); return
-        else: return
-        update_state(user_id, pending={'date': target.isoformat()})
-        show_client_picker(user_id, action='add')
-    elif cmd == 'pick_client':
-        cid = payload.get('cid')
-        action = payload.get('action', 'add')
-        sid = payload.get('sid')
-        c = get_client(cid)
-        if not c:
-            send(user_id, "Клиент не найден.", main_menu(is_admin(user_id))); return
-        name = c['name']
-        if action == 'add':
-            p = get_state(user_id).get('pending', {})
-            p['client'] = name
-            update_state(user_id, awaiting='add_tonnage', pending=p)
-            send(user_id, f"👤 {name}\nВведите тоннаж или выберите:", tonnage_menu())
-        elif action == 'edit_client' and sid:
-            update_shipment(sid, client_name=name, user_id=user_id)
-            clear_state(user_id)
-            s = get_shipment(sid)
-            send(user_id, f"✅ Клиент изменён.\n\n{format_shipment_card(s)}",
-                 main_menu(is_admin(user_id)))
-    elif cmd == 'clients_page':
-        show_client_picker(user_id, action=payload.get('action', 'add'),
-                           sid=payload.get('sid'), page=int(payload.get('page', 0)))
-    elif cmd == 'new_client':
-        update_state(user_id, awaiting='new_client_name',
-                     action=payload.get('action', 'add'), sid=payload.get('sid'))
-        send(user_id, "Введите имя нового клиента:", cancel_menu())
-    elif cmd == 'pick_tonnage':
-        t = payload.get('t')
-        if t == 'custom':
-            update_state(user_id, awaiting='add_tonnage')
-            send(user_id, "Введите тоннаж числом (например, 25.5):", cancel_menu()); return
-        try: t = float(t)
-        except (TypeError, ValueError): return
-        p = get_state(user_id).get('pending', {})
-        p['tonnage'] = t
-        update_state(user_id, awaiting=None, pending=p)
-        show_confirm(user_id)
-    elif cmd == 'save_shipment':
-        on_save_shipment(user_id)
-    elif cmd == 'restart_add':
-        start_add(user_id)
-    elif cmd == 'add_again':
-        p = get_state(user_id).get('pending', {})
-        d = p.get('date') or tz_today().isoformat()
-        start_add_with_date(user_id, d)
-    elif cmd == 'add_again_for':
-        start_add_with_date(user_id, payload.get('date') or tz_today().isoformat())
-    elif cmd == 'add_comment':
-        update_state(user_id, awaiting='add_comment')
-        send(user_id, "Введите комментарий (или '-' чтобы убрать):", cancel_menu())
-    elif cmd == 'stats':
-        period = payload.get('period')
-        if period == 'custom':
-            update_state(user_id, awaiting='stats_custom_start')
-            send(user_id, "Введите начальную дату (ДД.ММ.ГГГГ):", cancel_menu()); return
-        show_stats(user_id, period=period)
-    elif cmd == 'export_csv':
-        on_export_csv(user_id)
-    elif cmd == 'export_csv_all':
-        on_export_csv(user_id, days=None)
-    elif cmd == 'download_db':
-        on_download_db(user_id)
-    elif cmd == 'admin_menu':
-        if is_admin(user_id):
-            send(user_id, "⚙️ Настройки:", admin_menu())
-    elif cmd == 'open_shipment':
-        on_open_shipment(user_id, payload)
-    elif cmd == 'edit_shipment':
-        sid = payload.get('sid')
-        s = get_shipment(sid)
-        if not s:
-            send(user_id, "Не найдено.", main_menu(is_admin(user_id))); return
-        send(user_id, f"Что изменить?\n\n{format_shipment_card(s)}", edit_menu(sid))
-    elif cmd == 'edit_field':
-        sid = payload.get('sid')
-        field = payload.get('field')
-        s = get_shipment(sid)
-        if not s:
-            send(user_id, "Не найдено.", main_menu(is_admin(user_id))); return
-        if field == 'client':
-            show_client_picker(user_id, action='edit_client', sid=sid)
-        elif field == 'tonnage':
-            update_state(user_id, awaiting='edit_tonnage', sid=sid)
-            send(user_id, f"Текущий тоннаж: {fmt_num(s['tonnage'])} т\nВведите новый:",
-                 cancel_menu())
-        elif field == 'date':
-            update_state(user_id, awaiting='edit_date', sid=sid)
-            send(user_id, f"Текущая дата: {ru_date(s['shipment_date'])}\nВведите новую (ДД.ММ.ГГГГ):",
-                 cancel_menu())
-        elif field == 'comment':
-            update_state(user_id, awaiting='edit_comment', sid=sid)
-            send(user_id, f"Текущий комментарий: {s.get('comment') or '(нет)'}\nВведите новый:",
-                 cancel_menu())
-    elif cmd == 'del_shipment':
-        sid = payload.get('sid')
-        if not is_admin(user_id):
-            send(user_id, "❌ Только администратор."); return
-        delete_shipment(sid)
-        send(user_id, "🗑 Удалено.", main_menu(is_admin(user_id)))
-    elif cmd == 'open_client':
-        show_client_card(user_id, payload.get('cid'))
-    elif cmd == 'clients_summary':
-        show_clients_info(user_id)
-    elif cmd == 'client_history':
-        show_client_history(user_id, payload.get('cid'))
-    elif cmd == 'client_chart':
-        c = get_client(payload.get('cid'))
-        if not c:
-            send(user_id, "❌ Клиент не найден.", main_menu(is_admin(user_id))); return
-        show_chart(user_id, client_name=c['name'])
-    elif cmd == 'week_compare':
-        show_week_comparison(user_id)
-    elif cmd == 'chart':
-        period = payload.get('period')
-        if period == 'custom':
-            update_state(user_id, awaiting='chart_custom_start')
-            send(user_id, "Введите начальную дату (ДД.ММ.ГГГГ):", cancel_menu()); return
-        show_chart(user_id, period=period)
-
-
-# ════════════════════════════ ТЕКСТ ════════════════════════════
-
-MAIN_MENU_BUTTONS = {
-    '➕ Добавить погрузку', '📋 Сегодня', '📋 Завтра', '📅 Другая дата',
-    '📊 Статистика', '📁 Клиенты', '❓ Помощь', '⚙️ Настройки'
-}
-
-
-def handle_text(user_id, text):
-    text = (text or '').strip()
-
-    if text.lower() in ('/отмена', 'отмена', 'cancel', '/cancel'):
-        clear_state(user_id)
-        send(user_id, "Отменено.", main_menu(is_admin(user_id)))
-        return
-
-    is_menu_btn = (text in MAIN_MENU_BUTTONS
-                   or text.startswith('🔔 Сводка')
-                   or text.startswith('🔕 Сводка'))
-    if is_menu_btn and get_state(user_id).get('awaiting'):
-        clear_state(user_id)
-
-    state = get_state(user_id)
-    awaiting = state.get('awaiting')
-
-    if awaiting == 'text_import':
-        if len(text) < 5:
-            send(user_id, "❌ Слишком короткий текст. Пришлите данные или нажмите «Отмена».",
-                 cancel_menu()); return
-        imported, skipped, errors = import_from_text(user_id, text)
-        clear_state(user_id)
-        result = [f"✍️ Импорт завершён:", f"• Добавлено: {imported}"]
-        if skipped: result.append(f"• Пропущено: {skipped}")
-        if errors:
-            result.append(""); result.append("Примеры ошибок:")
-            result.extend(errors[:5])
-        result.append(""); result.append("Проверьте: 📊 Статистика → Этот год")
-        send(user_id, "\n".join(result), admin_menu())
-        return
-
-    if awaiting == 'add_custom_date':
-        d = parse_date(text)
-        if not d:
-            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:", cancel_menu()); return
-        clear_state(user_id)
-        set_state(user_id, pending={'date': d.isoformat()})
-        show_client_picker(user_id, action='add')
-    elif awaiting == 'new_client_name':
-        name = text.strip()
-        if not name:
-            send(user_id, "❌ Пустое имя. Введите ещё раз:", cancel_menu()); return
-        action = state.get('action', 'add')
-        sid = state.get('sid')
-        if action == 'edit_client' and sid:
-            update_shipment(sid, client_name=name, user_id=user_id)
-            clear_state(user_id)
-            s = get_shipment(sid)
-            send(user_id, f"✅ Клиент изменён.\n\n{format_shipment_card(s)}",
-                 main_menu(is_admin(user_id)))
-        else:
-            touch_client(name)
-            p = state.get('pending', {})
-            p['client'] = name
-            update_state(user_id, awaiting='add_tonnage', pending=p)
-            send(user_id, f"👤 {name}\nВведите тоннаж или выберите:", tonnage_menu())
-    elif awaiting == 'add_tonnage':
-        t = parse_number(text)
-        if t is None or t <= 0:
-            send(user_id, "❌ Введите положительное число:", cancel_menu()); return
-        p = state.get('pending', {})
-        p['tonnage'] = t
-        update_state(user_id, awaiting=None, pending=p)
-        show_confirm(user_id)
-    elif awaiting == 'add_comment':
-        comment = text.strip()
-        if comment == '-': comment = ''
-        p = state.get('pending', {})
-        p['comment'] = comment
-        update_state(user_id, awaiting=None, pending=p)
-        show_confirm(user_id)
-    elif awaiting == 'edit_tonnage':
-        t = parse_number(text)
-        if t is None or t <= 0:
-            send(user_id, "❌ Введите положительное число:", cancel_menu()); return
-        sid = state.get('sid')
-        update_shipment(sid, tonnage=t, user_id=user_id)
-        clear_state(user_id)
-        s = get_shipment(sid)
-        send(user_id, f"✅ Тоннаж изменён.\n\n{format_shipment_card(s)}",
-             shipment_item_menu(sid, s['shipment_date'], allow_delete=is_admin(user_id)))
-    elif awaiting == 'edit_date':
-        d = parse_date(text)
-        if not d:
-            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:", cancel_menu()); return
-        sid = state.get('sid')
-        update_shipment(sid, shipment_date=d.isoformat(), user_id=user_id)
-        clear_state(user_id)
-        s = get_shipment(sid)
-        send(user_id, f"✅ Дата изменена.\n\n{format_shipment_card(s)}",
-             shipment_item_menu(sid, s['shipment_date'], allow_delete=is_admin(user_id)))
-    elif awaiting == 'edit_comment':
-        comment = text.strip()
-        if comment == '-': comment = ''
-        sid = state.get('sid')
-        update_shipment(sid, comment=comment, user_id=user_id)
-        clear_state(user_id)
-        s = get_shipment(sid)
-        send(user_id, f"✅ Комментарий изменён.\n\n{format_shipment_card(s)}",
-             shipment_item_menu(sid, s['shipment_date'], allow_delete=is_admin(user_id)))
-    elif awaiting == 'stats_custom_start':
-        d = parse_date(text)
-        if not d:
-            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:", cancel_menu()); return
-        update_state(user_id, awaiting='stats_custom_end', stats_start=d.isoformat())
-        send(user_id, "Введите конечную дату (ДД.ММ.ГГГГ):", cancel_menu())
-    elif awaiting == 'stats_custom_end':
-        d = parse_date(text)
-        if not d:
-            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:", cancel_menu()); return
-        start = state.get('stats_start')
-        clear_state(user_id)
-        show_stats(user_id, period='custom', start=start, end=d.isoformat())
-    elif awaiting == 'chart_custom_start':
-        d = parse_date(text)
-        if not d:
-            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:", cancel_menu()); return
-        update_state(user_id, awaiting='chart_custom_end', chart_start=d.isoformat())
-        send(user_id, "Введите конечную дату (ДД.ММ.ГГГГ):", cancel_menu())
-    elif awaiting == 'chart_custom_end':
-        d = parse_date(text)
-        if not d:
-            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:", cancel_menu()); return
-        start = state.get('chart_start')
-        clear_state(user_id)
-        show_chart(user_id, period='custom', start=start, end=d.isoformat())
-    elif awaiting == 'csv_import':
-        send(user_id, "📎 Пришлите файл .xlsx как документ (скрепка → Документ) "
-                      "или нажмите «Отмена».", cancel_menu())
-    elif text == '➕ Добавить погрузку':
-        start_add(user_id)
-    elif text == '📋 Сегодня':
-        show_day_shipments(user_id, tz_today())
-    elif text == '📋 Завтра':
-        show_day_shipments(user_id, tz_today() + timedelta(days=1))
-    elif text == '📅 Другая дата':
-        update_state(user_id, awaiting='add_custom_date')
-        send(user_id, "Введите дату (ДД.ММ.ГГГГ). Можно: 'сегодня', 'завтра', 'послезавтра'.",
-             cancel_menu())
-    elif text == '📊 Статистика':
-        send(user_id, "Выберите период:", stats_menu())
-    elif text == '📁 Клиенты':
-        show_clients_for_history(user_id)
-    elif text == '❓ Помощь':
-        show_help(user_id)
-    elif text == '⚙️ Настройки' and is_admin(user_id):
-        send(user_id, "⚙️ Настройки:", admin_menu())
-    elif text.startswith('🔔 Сводка') or text.startswith('🔕 Сводка'):
-        new_val = toggle_morning_report(user_id)
-        label = 'включена' if new_val else 'выключена'
-        send(user_id, f"Утренняя сводка {label}.",
-             main_menu(is_admin(user_id), bool(new_val)))
-    else:
-        send(user_id, "Не понял. Используйте кнопки меню.",
-             main_menu(is_admin(user_id)))
-
-
-# ════════════════════════════ ФОН ════════════════════════════
-
-_morning_last_day = None
-
-
-def morning_report_loop():
-    global _morning_last_day
-    while True:
-        try:
-            n = tz_now()
-            today_key = n.date().isoformat()
-            if (n.hour == MORNING_REPORT_HOUR
-                    and n.minute >= MORNING_REPORT_MINUTE
-                    and _morning_last_day != today_key):
-                _morning_last_day = today_key
-                for u in get_all_users():
-                    if not u.get('morning_report'): continue
-                    uid = u['user_id']
-                    try:
-                        shipments = get_shipments_by_date(n.date())
-                        text = format_day_shipments(
-                            n.date(), shipments,
-                            f"🌅 Доброе утро! Погрузки на сегодня ({ru_date(n.date())}):")
-                        send(uid, text, main_menu(is_admin(uid)))
-                    except Exception:
-                        traceback.print_exc()
-        except Exception:
-            traceback.print_exc()
-        time.sleep(60)
-
-
-_backup_last_day = None
-
-
-def backup_loop():
-    global _backup_last_day
-    while True:
-        try:
-            n = tz_now()
-            today_key = n.date().isoformat()
-            if (n.hour == BACKUP_HOUR
-                    and n.minute >= BACKUP_MINUTE
-                    and _backup_last_day != today_key):
-                path = make_backup()
-                _backup_last_day = today_key
-                if path: print(f"[backup] saved: {path} at {n}")
-        except Exception:
-            traceback.print_exc()
-        time.sleep(60)
-
-
-def _run_keepalive_server():
-    port = int(os.getenv('PORT', '8080'))
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/plain; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(b'OK')
-        def log_message(self, *args): pass
-
-    try:
-        server = HTTPServer(('0.0.0.0', port), Handler)
-        print(f"[keepalive] listening on port {port}")
-        server.serve_forever()
-    except Exception as e:
-        print(f"[keepalive] error: {e}")
-
-
-def _extract_payload(event):
-    raw = getattr(event, 'payload', None)
-    if not raw: return None
-    if isinstance(raw, dict): return raw
-    try: return json.loads(raw)
-    except (ValueError, TypeError): return None
-
-
-def _extract_attachments(event):
-    """Возвращает список вложений-документов."""
-    atts = getattr(event, 'attachments', None)
-    if not atts:
-        return []
-    if isinstance(atts, list):
-        return atts
-    if isinstance(atts, dict):
-        inner = atts.get('attachments')
-        if isinstance(inner, list):
-            return inner
-        result = []
-        i = 1
-        while True:
-            ref = atts.get(f'attach{i}')
-            typ = atts.get(f'attach{i}_type')
-            if ref is None and typ is None:
-                break
-            if typ == 'doc' and ref:
-                try:
-                    if isinstance(ref, str) and ref.startswith('doc'):
-                        parts = ref[3:].split('_')
-                        owner_id = int(parts[0])
-                        doc_id = int(parts[1])
-                        doc_info = vk.docs.getById(docs=f'{owner_id}_{doc_id}')
-                        items = doc_info.get('items') or []
-                        if items:
-                            result.append({'type': 'doc', 'doc': items[0]})
-                except Exception:
-                    traceback.print_exc()
-            i += 1
-        return result
-    return []
-
-
-def _collect_docs_for_import(event, user_id):
-    """Собирает документы из события всеми доступными способами."""
-    docs = []
-
-    # 1) через _extract_attachments
-    atts = _extract_attachments(event)
-    for a in atts:
-        if isinstance(a, dict) and a.get('type') == 'doc':
-            docs.append(a)
-
-    # 2) если пусто — тянем сообщение целиком через API
-    if not docs:
-        msg_id = getattr(event, 'message_id', None)
-        if msg_id:
-            try:
-                resp = vk.messages.getById(message_ids=msg_id)
-                items = resp.get('items') or []
-                if items:
-                    for a in (items[0].get('attachments') or []):
-                        if isinstance(a, dict) and a.get('type') == 'doc':
-                            docs.append(a)
-            except Exception:
-                traceback.print_exc()
-
-    # 3) диагностика в лог
-    try:
-        raw_atts = getattr(event, 'attachments', None)
-        print(f"[import] user={user_id} msg_id={getattr(event,'message_id',None)} "
-              f"raw_atts={raw_atts!r} docs_found={len(docs)}")
-    except Exception:
-        pass
-
-    return docs
-
-
-def main():
-    print(f"[bot] starting at {tz_now()} (UTC+{TIMEZONE_OFFSET_HOURS})")
-    if not TOKEN: print("❌ VK_TOKEN не задан."); return
-    if not GROUP_ID: print("❌ VK_GROUP_ID не задан."); return
-    if longpoll is None: print("❌ Long Poll не инициализирован."); return
-
-    threading.Thread(target=_run_keepalive_server, daemon=True).start()
-    threading.Thread(target=morning_report_loop, daemon=True).start()
-    threading.Thread(target=backup_loop, daemon=True).start()
-
-    print("[bot] listening for events...")
-    for event in longpoll.listen():
-        if event.type == VkEventType.MESSAGE_NEW and event.to_me:
-            user_id = event.user_id
-            upsert_user(user_id)
-
-            st = get_state(user_id)
-            if st.get('awaiting') == 'csv_import':
-                docs = _collect_docs_for_import(event, user_id)
-                if docs:
-                    try: handle_csv_attachment(user_id, docs)
-                    except Exception:
-                        traceback.print_exc()
-                        send(user_id, "❌ Ошибка при импорте.", cancel_menu())
-                        clear_state(user_id)
-                    continue
-
-            payload = _extract_payload(event)
-            if payload and payload.get('cmd'):
-                try: handle_payload(user_id, payload)
-                except Exception:
-                    traceback.print_exc()
-                    send(user_id, "❌ Ошибка. Попробуйте ещё раз.",
-                         main_menu(is_admin(user_id)))
-            else:
-                try: handle_text(user_id, event.text or '')
-                except Exception:
-                    traceback.print_exc()
-                    send(user_id, "❌ Ошибка. Попробуйте ещё раз.",
-                         main_menu(is_admin(user_id)))
-
-
-if __name__ == '__main__':
-    main()
+        lines.append("Нет отгрузок за период."); return "\n".
