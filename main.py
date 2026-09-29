@@ -33,7 +33,7 @@ plt.rcParams['font.family'] = 'DejaVu Sans'
 #                        НАСТРОЙКИ
 # ════════════════════════════════════════════════════════════
 
-TOKEN = os.getenv('VK_TOKEN', '')
+TOKEN = os.getenv('VK_TOKEN', '').strip()
 GROUP_ID = int(os.getenv('VK_GROUP_ID', '0'))
 
 ADMIN_IDS = []
@@ -105,7 +105,7 @@ def clear_state(user_id):
 
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=20)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -198,12 +198,16 @@ def get_client(client_id):
         return dict(row) if row else None
 
 
-def touch_client(name):
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO clients (name, last_used) VALUES (?, ?)
-               ON CONFLICT(name) DO UPDATE SET last_used = excluded.last_used""",
-            (name.strip(), now_iso()))
+def touch_client(name, conn=None):
+    """Обновляет last_used. Если передан conn — использует его."""
+    sql = """INSERT INTO clients (name, last_used) VALUES (?, ?)
+             ON CONFLICT(name) DO UPDATE SET last_used = excluded.last_used"""
+    params = (name.strip(), now_iso())
+    if conn is not None:
+        conn.execute(sql, params)
+    else:
+        with get_db() as c:
+            c.execute(sql, params)
 
 
 def add_shipment(client_name, tonnage, shipment_date, user_id, comment=''):
@@ -215,7 +219,7 @@ def add_shipment(client_name, tonnage, shipment_date, user_id, comment=''):
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (client_name.strip(), float(tonnage), trucks,
              shipment_date, comment, now_iso(), user_id))
-        touch_client(client_name)
+        touch_client(client_name, conn=conn)
         return cur.lastrowid
 
 
@@ -229,9 +233,10 @@ def get_shipment(shipment_id):
 def update_shipment(shipment_id, client_name=None, tonnage=None,
                     shipment_date=None, comment=None, user_id=None):
     fields, values = [], []
+    touched_name = None
     if client_name is not None:
         fields.append("client_name = ?"); values.append(client_name.strip())
-        touch_client(client_name)
+        touched_name = client_name.strip()
     if tonnage is not None:
         fields += ["tonnage = ?", "trucks = ?"]
         values += [float(tonnage), calc_trucks(float(tonnage))]
@@ -246,6 +251,8 @@ def update_shipment(shipment_id, client_name=None, tonnage=None,
     values.append(shipment_id)
     with get_db() as conn:
         conn.execute(f"UPDATE shipments SET {', '.join(fields)} WHERE id = ?", values)
+        if touched_name:
+            touch_client(touched_name, conn=conn)
 
 
 def delete_shipment(shipment_id):
@@ -565,10 +572,22 @@ def admin_menu():
 #                        ИНИЦИАЛИЗАЦИЯ VK
 # ════════════════════════════════════════════════════════════
 
-vk_session = vk_api.VkApi(token=TOKEN)
-vk = vk_session.get_api()
-longpoll = VkLongPoll(vk_session)
 init_db()
+
+vk_session = None
+vk = None
+longpoll = None
+
+if TOKEN:
+    try:
+        vk_session = vk_api.VkApi(token=TOKEN)
+        vk = vk_session.get_api()
+        longpoll = VkLongPoll(vk_session)
+    except Exception as e:
+        print(f"❌ Ошибка инициализации VK: {e}")
+        vk_session = None
+        vk = None
+        longpoll = None
 
 
 # ════════════════════════════════════════════════════════════
@@ -582,6 +601,9 @@ def is_admin(user_id):
 
 
 def send(user_id, text, keyboard=None, attachment=None):
+    if vk is None:
+        print("[send] VK не инициализирован")
+        return
     if len(text) > 4000:
         text = text[:3990] + "\n…(обрезано)"
     params = {'user_id': user_id, 'message': text, 'random_id': get_random_id()}
@@ -742,7 +764,7 @@ def show_client_picker(user_id, action='add', sid=None, page=0):
     clients = get_clients()
     if not clients:
         update_state(user_id, awaiting='new_client_name', action=action, sid=sid)
-        send(user_id, "Список клиентов пуст. Введите имя нового клиента:")
+        send(user_id, "📁 Справочник пуст. Введите имя первого клиента:")
         return
     send(user_id, "👤 Выберите клиента:",
          clients_menu(clients, action=action, sid=sid, page=page))
@@ -1367,7 +1389,6 @@ def handle_text(user_id, text):
             return
         action = state.get('action', 'add')
         sid = state.get('sid')
-        touch_client(name)
         if action == 'edit_client' and sid:
             update_shipment(sid, client_name=name, user_id=user_id)
             clear_state(user_id)
@@ -1375,6 +1396,7 @@ def handle_text(user_id, text):
             send(user_id, f"✅ Клиент изменён.\n\n{format_shipment_card(s)}",
                  main_menu(is_admin(user_id)))
         else:
+            touch_client(name)
             p = state.get('pending', {})
             p['client'] = name
             update_state(user_id, awaiting='add_tonnage', pending=p)
@@ -1601,6 +1623,9 @@ def main():
         return
     if not GROUP_ID:
         print("❌ VK_GROUP_ID не задан. Проверьте переменные окружения Bothost.")
+        return
+    if longpoll is None:
+        print("❌ Long Poll не инициализирован (проверьте токен).")
         return
 
     threading.Thread(target=_run_keepalive_server, daemon=True).start()
