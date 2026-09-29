@@ -30,6 +30,8 @@ from matplotlib.dates import DateFormatter
 plt.rcParams['font.family'] = 'DejaVu Sans'
 
 
+# ════════════════════════════ НАСТРОЙКИ ════════════════════════════
+
 TOKEN = os.getenv('VK_TOKEN', '').strip()
 GROUP_ID = int(os.getenv('VK_GROUP_ID', '0'))
 
@@ -62,6 +64,8 @@ def get_state(user_id): return dict(_states.get(user_id, {}))
 def clear_state(user_id): _states.pop(user_id, None)
 
 
+# ════════════════════════════ БАЗА ДАННЫХ ════════════════════════════
+
 @contextmanager
 def get_db():
     conn = sqlite3.connect(DB_PATH, timeout=20)
@@ -79,20 +83,28 @@ def init_db():
     with get_db() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS shipments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                client_name TEXT NOT NULL, tonnage REAL NOT NULL,
-                trucks REAL NOT NULL, shipment_date TEXT NOT NULL,
-                comment TEXT DEFAULT '', created_at TEXT NOT NULL,
-                created_by INTEGER, updated_at TEXT, updated_by INTEGER
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_name   TEXT NOT NULL,
+                tonnage       REAL NOT NULL,
+                trucks        REAL NOT NULL,
+                shipment_date TEXT NOT NULL,
+                comment       TEXT DEFAULT '',
+                created_at    TEXT NOT NULL,
+                created_by    INTEGER,
+                updated_at    TEXT,
+                updated_by    INTEGER
             );
             CREATE TABLE IF NOT EXISTS clients (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE NOT NULL COLLATE NOCASE, last_used TEXT
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                name      TEXT UNIQUE NOT NULL COLLATE NOCASE,
+                last_used TEXT
             );
             CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY, first_name TEXT,
-                role TEXT DEFAULT 'manager', morning_report INTEGER DEFAULT 1,
-                last_seen TEXT
+                user_id        INTEGER PRIMARY KEY,
+                first_name     TEXT,
+                role           TEXT DEFAULT 'manager',
+                morning_report INTEGER DEFAULT 1,
+                last_seen      TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_ship_date ON shipments(shipment_date);
             CREATE INDEX IF NOT EXISTS idx_ship_client ON shipments(client_name);
@@ -288,10 +300,9 @@ def _p(**kw):
     return json.dumps(kw, ensure_ascii=False)
 
 
-# ════════════════════════ КЛАВИАТУРЫ ════════════════════════
+# ════════════════════════════ КЛАВИАТУРЫ ════════════════════════════
 
 def main_menu(is_admin=False, morning_on=True):
-    """5 рядов — кнопки возврата всегда доступны."""
     kb = VkKeyboard(one_time=False)
     kb.add_button('➕ Добавить погрузку', color=VkKeyboardColor.POSITIVE)
     kb.add_line()
@@ -312,7 +323,6 @@ def main_menu(is_admin=False, morning_on=True):
 
 
 def cancel_menu():
-    """Универсальная отмена для текстовых вводов."""
     kb = VkKeyboard(inline=True)
     kb.add_button('🏠 В меню', color=VkKeyboardColor.SECONDARY, payload=_p(cmd='to_menu'))
     kb.add_button('❌ Отмена', color=VkKeyboardColor.NEGATIVE, payload=_p(cmd='cancel'))
@@ -476,7 +486,7 @@ def admin_menu():
     kb = VkKeyboard(inline=True)
     kb.add_button('✍️ Импорт текстом', color=VkKeyboardColor.POSITIVE,
                   payload=_p(cmd='import_text'))
-    kb.add_button('📥 Импорт файла', color=VkKeyboardColor.SECONDARY,
+    kb.add_button('📥 Импорт Excel (1С)', color=VkKeyboardColor.PRIMARY,
                   payload=_p(cmd='import_csv'))
     kb.add_line()
     kb.add_button('💾 Скачать базу', color=VkKeyboardColor.PRIMARY,
@@ -494,7 +504,7 @@ def admin_menu():
     return kb.get_keyboard()
 
 
-# ════════════════════════ ИНИЦИАЛИЗАЦИЯ VK ════════════════════════
+# ════════════════════════════ ИНИЦИАЛИЗАЦИЯ VK ════════════════════════════
 
 init_db()
 
@@ -511,7 +521,7 @@ if TOKEN:
         print(f"❌ Ошибка инициализации VK: {e}")
 
 
-# ════════════════════════ УТИЛИТЫ ════════════════════════
+# ════════════════════════════ УТИЛИТЫ ════════════════════════════
 
 def is_admin(user_id):
     if not ADMIN_IDS: return True
@@ -582,7 +592,7 @@ def ru_date(d):
     return d.strftime('%d.%m.%Y')
 
 
-# ════════════════════════ ФОРМАТИРОВАНИЕ ════════════════════════
+# ════════════════════════════ ФОРМАТИРОВАНИЕ ════════════════════════════
 
 def format_shipment_card(s):
     if not s: return "❌ Отгрузка не найдена."
@@ -631,7 +641,7 @@ def format_stats(title, stats):
     return "\n".join(lines)
 
 
-# ════════════════════════ МЕНЮ ════════════════════════
+# ════════════════════════════ МЕНЮ ════════════════════════════
 
 def show_main_menu(user_id):
     u = next((x for x in get_all_users() if x['user_id'] == user_id), None)
@@ -647,16 +657,16 @@ def show_help(user_id):
         "• ✏️ Изменять и удалять отгрузки\n"
         "• 📊 Статистика за любой период\n"
         "• 📁 Справочник клиентов\n"
-        "• 🔔 Утренняя сводка\n\n"
+        "• 🔔 Утренняя сводка\n"
+        "• 📥 Импорт Excel из 1С\n\n"
         f"🚛 Фур = тоннаж ÷ {fmt_num(TRUCK_CAPACITY)}\n"
         f"🕐 Часовой пояс: Уфа (UTC+{TIMEZONE_OFFSET_HOURS})\n\n"
-        "💡 Чтобы прервать любое действие — нажмите любую кнопку меню внизу "
-        "или отправьте /отмена."
+        "💡 Прервать любое действие — кнопка меню внизу или /отмена."
     )
     send(user_id, text, main_menu(is_admin(user_id)))
 
 
-# ════════════════════════ ДОБАВЛЕНИЕ ════════════════════════
+# ════════════════════════════ ДОБАВЛЕНИЕ ════════════════════════════
 
 def start_add(user_id):
     clear_state(user_id)
@@ -710,7 +720,7 @@ def on_save_shipment(user_id):
          after_save_menu())
 
 
-# ════════════════════════ ПРОСМОТР ДНЯ ════════════════════════
+# ════════════════════════════ ПРОСМОТР ДНЯ ════════════════════════════
 
 def show_day_shipments(user_id, d):
     shipments = get_shipments_by_date(d)
@@ -727,7 +737,7 @@ def on_open_shipment(user_id, payload):
          shipment_item_menu(sid, s['shipment_date'], allow_delete=is_admin(user_id)))
 
 
-# ════════════════════════ СТАТИСТИКА ════════════════════════
+# ════════════════════════════ СТАТИСТИКА ════════════════════════════
 
 def show_stats(user_id, period=None, start=None, end=None):
     today = tz_today()
@@ -763,7 +773,7 @@ def show_stats(user_id, period=None, start=None, end=None):
     send(user_id, format_stats(title, stats), main_menu(is_admin(user_id)))
 
 
-# ════════════════════════ ИМПОРТ ════════════════════════
+# ════════════════════════════ ИМПОРТ ════════════════════════════
 
 def _split_line(line):
     if '\t' in line: return [p.strip() for p in line.split('\t')]
@@ -807,6 +817,7 @@ def import_from_text(user_id, text):
 
 
 def _import_rows(user_id, rows):
+    """Обычный формат: Клиент | Дата | Тоннаж."""
     if not rows or len(rows) < 2:
         return 0, 0, ["Нужна хотя бы одна строка данных"]
     header = [str(h or '').strip().lower() for h in rows[0]]
@@ -855,8 +866,116 @@ def _import_rows(user_id, rows):
     return imported, skipped, errors
 
 
+def import_1c_data(user_id, rows):
+    """Парсит выгрузку из 1С «Выполнение сборки и отгрузки товаров».
+    Формат:
+      <Склад>                       — заголовок, пропускаем
+      <Клиент>                      — текст в A, B и F пустые, следующий ряд — Расходный ордер
+      Расходный ордер ... от ДД.ММ.ГГГГ ...   — вес в последней колонке (кг)
+      <товары>                      — пропускаем
+    """
+    n = len(rows)
+    next_nonempty = [None] * n
+    last = None
+    for i in range(n - 1, -1, -1):
+        next_nonempty[i] = last
+        r = rows[i]
+        if r and any(c is not None and str(c).strip() for c in r):
+            last = r
+
+    imported = 0
+    skipped = 0
+    errors = []
+    current_client = None
+    date_re = re.compile(r'от\s+(\d{2}\.\d{2}\.\d{4})')
+
+    for idx, row in enumerate(rows):
+        rn = idx + 1
+        try:
+            if not row:
+                continue
+            r = list(row)
+            if len(r) < 7:
+                r = r + [None] * (7 - len(r))
+            a = r[0]
+            b = r[1] if len(r) > 1 else None
+            f = r[5] if len(r) > 5 else None
+            g = r[6] if len(r) > 6 else None
+
+            a_str = str(a).strip() if a is not None else ''
+            if not a_str:
+                continue
+            a_low = a_str.lower()
+
+            # Заголовки отчёта
+            if (a_low.startswith('выполнение сборки') or
+                a_low.startswith('параметры') or
+                a_low.startswith('отбор') or
+                a_low in ('склад', 'получатель', 'регистратор', 'артикул', 'итого')):
+                continue
+
+            # Строка отгрузки
+            if 'расходный ордер' in a_low:
+                if current_client is None:
+                    skipped += 1
+                    continue
+                m = date_re.search(a_str)
+                if not m:
+                    skipped += 1
+                    continue
+                try:
+                    d = datetime.strptime(m.group(1), '%d.%m.%Y').date()
+                except ValueError:
+                    errors.append(f"Строка {rn}: плохая дата")
+                    skipped += 1
+                    continue
+                g_str = str(g).replace(',', '.').replace(' ', '').strip() if g is not None else ''
+                if not g_str:
+                    skipped += 1
+                    continue
+                try:
+                    weight_kg = float(g_str)
+                except ValueError:
+                    skipped += 1
+                    continue
+                weight_t = weight_kg / 1000.0
+                if weight_t <= 0:
+                    skipped += 1
+                    continue
+                add_shipment(current_client, round(weight_t, 3), d.isoformat(),
+                             user_id, comment='1С')
+                imported += 1
+                continue
+
+            # Строка товара (артикул — число)
+            if a_str.replace('.', '').replace(',', '').replace(' ', '').isdigit():
+                continue
+
+            # Претендент на клиента: B и F пусто
+            b_str = str(b).strip() if b is not None else ''
+            f_str = str(f).strip() if f is not None else ''
+            if b_str != '' or f_str != '':
+                continue
+
+            # Клиент — если следующая непустая строка начинается с «Расходный ордер»
+            nr = next_nonempty[idx]
+            if nr is None:
+                continue
+            nr_a = str(nr[0]).strip().lower() if nr[0] is not None else ''
+            if 'расходный ордер' in nr_a:
+                current_client = a_str
+            # иначе это склад — пропускаем
+
+        except Exception as e:
+            errors.append(f"Строка {rn}: {e}")
+            skipped += 1
+
+    return imported, skipped, errors
+
+
 def import_csv_data(user_id, data_bytes, filename=''):
     name = (filename or '').lower()
+
     if name.endswith('.xlsx') or name.endswith('.xlsm'):
         try:
             from openpyxl import load_workbook
@@ -868,16 +987,36 @@ def import_csv_data(user_id, data_bytes, filename=''):
             rows = [list(r) for r in ws.iter_rows(values_only=True)]
         except Exception as e:
             return 0, 0, [f"Не удалось прочитать Excel: {e}"]
+
+        # 1С?
+        for r in rows[:300]:
+            if r and r[0] and 'расходный ордер' in str(r[0]).lower():
+                return import_1c_data(user_id, rows)
         return _import_rows(user_id, rows)
+
     if name.endswith('.xls'):
         return 0, 0, ["Формат .xls не поддерживается. Сохраните как .xlsx"]
+
+    # CSV
     try:
         text = data_bytes.decode('utf-8-sig')
     except UnicodeDecodeError:
-        try: text = data_bytes.decode('cp1251')
-        except Exception: return 0, 0, ["Не удалось прочитать файл"]
+        try:
+            text = data_bytes.decode('cp1251')
+        except Exception:
+            return 0, 0, ["Не удалось прочитать файл"]
+
     lines = [ln for ln in text.splitlines() if ln.strip()]
-    if not lines: return 0, 0, ["Файл пуст"]
+    if not lines:
+        return 0, 0, ["Файл пуст"]
+
+    # 1С-CSV?
+    for ln in lines[:50]:
+        if 'расходный ордер' in ln.lower():
+            delim = ';' if ';' in lines[0] else ('\t' if '\t' in lines[0] else ',')
+            reader = list(csv.reader(lines, delimiter=delim))
+            return import_1c_data(user_id, reader)
+
     first = lines[0]
     if ';' in first: delim = ';'
     elif '\t' in first: delim = '\t'
@@ -889,22 +1028,26 @@ def import_csv_data(user_id, data_bytes, filename=''):
 
 def handle_csv_attachment(user_id, attachments):
     for att in attachments:
-        if att.get('type') != 'doc': continue
+        if att.get('type') != 'doc':
+            continue
         doc = att.get('doc') or {}
         url = doc.get('url')
         filename = doc.get('title', '')
-        if not url: continue
+        if not url:
+            continue
         send(user_id, f"📥 Скачиваю файл: {filename}")
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=180) as resp:
                 data = resp.read()
         except Exception as e:
             send(user_id, f"❌ Не удалось скачать файл: {e}")
             clear_state(user_id); return
-        send(user_id, "⚙️ Обрабатываю...")
+
+        send(user_id, "⚙️ Обрабатываю файл (может занять до минуты)...")
         imported, skipped, errors = import_csv_data(user_id, data, filename)
         clear_state(user_id)
+
         result = [f"📥 Импорт завершён:", f"• Добавлено: {imported}"]
         if skipped: result.append(f"• Пропущено: {skipped}")
         if errors:
@@ -919,7 +1062,7 @@ def handle_csv_attachment(user_id, attachments):
     clear_state(user_id)
 
 
-# ════════════════════════ ЭКСПОРТ ════════════════════════
+# ════════════════════════════ ЭКСПОРТ ════════════════════════════
 
 def upload_csv_doc(user_id, data, filename):
     fd, path = tempfile.mkstemp(suffix='.csv')
@@ -980,7 +1123,7 @@ def on_export_csv(user_id, days=30):
         send(user_id, f"❌ Не удалось загрузить файл: {e}", admin_menu())
 
 
-# ════════════════════════ ИСТОРИЯ КЛИЕНТА ════════════════════════
+# ════════════════════════════ ИСТОРИЯ КЛИЕНТА ════════════════════════════
 
 def show_clients_for_history(user_id, page=0):
     clients = get_clients()
@@ -1026,7 +1169,7 @@ def show_client_history(user_id, cid):
     send(user_id, "\n".join(lines), client_card_menu(cid))
 
 
-# ════════════════════════ СРАВНЕНИЕ НЕДЕЛЬ ════════════════════════
+# ════════════════════════════ СРАВНЕНИЕ НЕДЕЛЬ ════════════════════════════
 
 def show_week_comparison(user_id):
     cmp = week_comparison()
@@ -1054,7 +1197,7 @@ def show_week_comparison(user_id):
     send(user_id, "\n".join(lines), main_menu(is_admin(user_id)))
 
 
-# ════════════════════════ ГРАФИКИ ════════════════════════
+# ════════════════════════════ ГРАФИКИ ════════════════════════════
 
 def make_chart_png(start, end, title, shipments):
     by_day = defaultdict(float)
@@ -1135,7 +1278,7 @@ def show_chart(user_id, period=None, start=None, end=None, client_name=None):
         send(user_id, f"❌ Не удалось отправить график: {e}", main_menu(is_admin(user_id)))
 
 
-# ════════════════════════ АДМИН ════════════════════════
+# ════════════════════════════ АДМИН ════════════════════════════
 
 def on_download_db(user_id):
     if not is_admin(user_id):
@@ -1166,7 +1309,7 @@ def show_clients_info(user_id):
     send(user_id, "\n".join(lines), main_menu(is_admin(user_id)))
 
 
-# ════════════════════════ PAYLOAD ════════════════════════
+# ════════════════════════════ PAYLOAD ════════════════════════════
 
 def handle_payload(user_id, payload):
     cmd = payload.get('cmd')
@@ -1197,19 +1340,16 @@ def handle_payload(user_id, payload):
         update_state(user_id, awaiting='text_import')
         text = ("✍️ Импорт текстом\n\n"
                 "Скопируйте данные из 1С или Excel и отправьте одним сообщением.\n\n"
-                "Формат строк:\n"
-                "Клиент | Дата | Тоннаж\n\n"
-                "Например:\n"
-                "ООО Ромашка 01.2026 150\n"
-                "ООО Ромашка 02.2026 180\n\n"
+                "Формат строк:\nКлиент | Дата | Тоннаж\n\n"
+                "Например:\nООО Ромашка 01.2026 150\nООО Ромашка 02.2026 180\n\n"
                 "Дата: 01.2026, 15.01.2026, янв 2026.\n"
-                "Заголовок (Клиент Дата Тоннаж) можно — бот пропустит.")
+                "Заголовок (Клиент Дата Тоннаж) — можно, бот пропустит.")
         send(user_id, text, cancel_menu())
     elif cmd == 'import_csv':
         if not is_admin(user_id):
             send(user_id, "❌ Только для администраторов."); return
         update_state(user_id, awaiting='csv_import')
-        send(user_id, "📥 Отправьте файл .xlsx или .csv как документ (скрепка → Документ).",
+        send(user_id, "📥 Отправьте файл .xlsx из 1С как документ (скрепка → Документ).",
              cancel_menu())
     elif cmd == 'pick_date':
         d = payload.get('date')
@@ -1342,7 +1482,7 @@ def handle_payload(user_id, payload):
         show_chart(user_id, period=period)
 
 
-# ════════════════════════ ТЕКСТ ════════════════════════
+# ════════════════════════════ ТЕКСТ ════════════════════════════
 
 MAIN_MENU_BUTTONS = {
     '➕ Добавить погрузку', '📋 Сегодня', '📋 Завтра', '📅 Другая дата',
@@ -1353,13 +1493,11 @@ MAIN_MENU_BUTTONS = {
 def handle_text(user_id, text):
     text = (text or '').strip()
 
-    # 1. Глобальная отмена
     if text.lower() in ('/отмена', 'отмена', 'cancel', '/cancel'):
         clear_state(user_id)
         send(user_id, "Отменено.", main_menu(is_admin(user_id)))
         return
 
-    # 2. Кнопка главного меню прерывает любое ожидание
     is_menu_btn = (text in MAIN_MENU_BUTTONS
                    or text.startswith('🔔 Сводка')
                    or text.startswith('🔕 Сводка'))
@@ -1369,7 +1507,6 @@ def handle_text(user_id, text):
     state = get_state(user_id)
     awaiting = state.get('awaiting')
 
-    # 3. Ожидание текстового ввода
     if awaiting == 'text_import':
         if len(text) < 5:
             send(user_id, "❌ Слишком короткий текст. Пришлите данные или нажмите «Отмена».",
@@ -1481,10 +1618,8 @@ def handle_text(user_id, text):
         clear_state(user_id)
         show_chart(user_id, period='custom', start=start, end=d.isoformat())
     elif awaiting == 'csv_import':
-        # Ждём файл; текстовое сообщение — подсказка
-        send(user_id, "📎 Пришлите файл как документ (скрепка → Документ) или нажмите «Отмена».",
-             cancel_menu())
-    # 4. Кнопки главного меню
+        send(user_id, "📎 Пришлите файл .xlsx как документ (скрепка → Документ) "
+                      "или нажмите «Отмена».", cancel_menu())
     elif text == '➕ Добавить погрузку':
         start_add(user_id)
     elif text == '📋 Сегодня':
@@ -1513,7 +1648,7 @@ def handle_text(user_id, text):
              main_menu(is_admin(user_id)))
 
 
-# ════════════════════════ ФОН ════════════════════════
+# ════════════════════════════ ФОН ════════════════════════════
 
 _morning_last_day = None
 
@@ -1625,7 +1760,6 @@ def main():
                         send(user_id, "❌ Ошибка при импорте.", cancel_menu())
                         clear_state(user_id)
                     continue
-                # Файл не прислан — пропустим к обычной обработке
 
             payload = _extract_payload(event)
             if payload and payload.get('cmd'):
