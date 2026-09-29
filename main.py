@@ -12,6 +12,7 @@ import tempfile
 import os
 import traceback
 import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from contextlib import contextmanager
 from datetime import datetime, date, timedelta, timezone
 from collections import defaultdict
@@ -1550,6 +1551,32 @@ def backup_loop():
 
 
 # ════════════════════════════════════════════════════════════
+#                    KEEP-ALIVE ВЕБ-СЕРВЕР
+# ════════════════════════════════════════════════════════════
+
+def _run_keepalive_server():
+    """Мини веб-сервер — нужен, чтобы Bothost видел контейнер живым."""
+    port = int(os.getenv('PORT', '8080'))
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(b'OK')
+
+        def log_message(self, *args):
+            pass
+
+    try:
+        server = HTTPServer(('0.0.0.0', port), Handler)
+        print(f"[keepalive] listening on port {port}")
+        server.serve_forever()
+    except Exception as e:
+        print(f"[keepalive] error: {e}")
+
+
+# ════════════════════════════════════════════════════════════
 #                          ЗАПУСК
 # ════════════════════════════════════════════════════════════
 
@@ -1563,6 +1590,7 @@ def main():
         print("❌ VK_GROUP_ID не задан. Проверьте переменные окружения Bothost.")
         return
 
+    threading.Thread(target=_run_keepalive_server, daemon=True).start()
     threading.Thread(target=morning_report_loop, daemon=True).start()
     threading.Thread(target=backup_loop, daemon=True).start()
 
