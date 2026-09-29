@@ -884,8 +884,8 @@ def show_stats(user_id, period=None, start=None, end=None):
 
 def make_day_image_png(d, shipments):
     """
-    PNG формата А4 вертикально (210×297 мм) с погрузками на день.
-    Крупные строки, автоподбор шрифта.
+    Рисует PNG формата А4 вертикально (210×297 мм) с погрузками на день.
+    Возвращает bytes PNG.
     """
     fig = plt.figure(figsize=(8.27, 11.69), dpi=150)
     ax = fig.add_axes([0, 0, 1, 1])
@@ -911,7 +911,7 @@ def make_day_image_png(d, shipments):
             fontweight='bold')
 
     # дата
-    ax.text(0.5, 0.905, f'📋 Погрузки на {date_str}',
+    ax.text(0.5, 0.905, f'Погрузки на {date_str}',
             ha='center', va='center', fontsize=22, color=COLOR_DARK,
             fontweight='bold')
 
@@ -983,7 +983,7 @@ def make_day_image_png(d, shipments):
             if len(cmt) > 60:
                 cmt = cmt[:59] + '…'
             ax.text(pad_left + 0.04, row_bottom + row_h * 0.22,
-                    f'💬 {cmt}',
+                    f'— {cmt}',
                     ha='left', va='center', fontsize=font_cmt,
                     color='#8b96a4', style='italic')
 
@@ -1358,25 +1358,47 @@ def upload_csv_doc(user_id, data, filename):
 
 
 def upload_photo_bytes(user_id, photo_bytes):
-    """Загружает фото в ВК двумя способами с fallback. Возвращает attachment-строку."""
-    fd, path = tempfile.mkstemp(suffix='.png')
+    """
+    Загружает фото в ВК. Конвертирует PNG → JPEG (ВК не всегда принимает PNG),
+    затем пробует два способа загрузки.
+    """
+    fd, path_png = tempfile.mkstemp(suffix='.png')
     os.close(fd)
+    path_jpg = path_png.replace('.png', '.jpg')
     try:
-        with open(path, 'wb') as f:
+        with open(path_png, 'wb') as f:
             f.write(photo_bytes)
+
+        # Конвертация PNG → JPEG (ВК любит JPEG)
+        converted = False
+        try:
+            from PIL import Image
+            img = Image.open(path_png).convert('RGB')
+            img.save(path_jpg, 'JPEG', quality=90)
+            converted = True
+        except Exception as e:
+            print(f"[upload_photo] PIL failed: {e}")
+            traceback.print_exc()
+            try:
+                shutil.copy2(path_png, path_jpg)
+                converted = True
+            except Exception:
+                traceback.print_exc()
+
+        upload_path = path_jpg if converted else path_png
 
         upload = vk_api.VkUpload(vk_session)
 
-        # ── Способ 1: стандартный photo_messages ──
+        # Способ 1 — стандартный photo_messages
         try:
-            photo = upload.photo_messages(photos=path, peer_id=user_id)[0]
+            photo = upload.photo_messages(photos=upload_path, peer_id=user_id)[0]
             if photo and photo.get('id'):
                 return f"photo{photo['owner_id']}_{photo['id']}"
         except Exception as e:
             print(f"[upload_photo] photo_messages failed: {e}")
             traceback.print_exc()
 
-        # ── Способ 2: вручную через messages.getUploadServer ──
+        # Способ 2 — вручную через photos.getMessagesUploadServer
         try:
             server = vk.photos.getMessagesUploadServer(peer_id=user_id)
             upload_url = server.get('upload_url')
@@ -1384,14 +1406,17 @@ def upload_photo_bytes(user_id, photo_bytes):
                 raise RuntimeError("Нет upload_url")
 
             boundary = '----VKBotBoundary' + str(int(time.time() * 1000))
-            with open(path, 'rb') as f:
+            with open(upload_path, 'rb') as f:
                 file_data = f.read()
+
+            ext = 'jpg' if converted else 'png'
+            ctype = 'image/jpeg' if converted else 'image/png'
 
             body = (
                 f'--{boundary}\r\n'
                 f'Content-Disposition: form-data; name="photo"; '
-                f'filename="photo.png"\r\n'
-                f'Content-Type: image/png\r\n\r\n'
+                f'filename="photo.{ext}"\r\n'
+                f'Content-Type: {ctype}\r\n\r\n'
             ).encode('utf-8') + file_data + f'\r\n--{boundary}--\r\n'.encode('utf-8')
 
             req = urllib.request.Request(
@@ -1412,8 +1437,9 @@ def upload_photo_bytes(user_id, photo_bytes):
 
         raise RuntimeError("Не удалось загрузить фото ни одним способом")
     finally:
-        try: os.remove(path)
-        except Exception: pass
+        for p in (path_png, path_jpg):
+            try: os.remove(p)
+            except Exception: pass
 
 
 def on_export_csv(user_id, days=30):
