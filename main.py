@@ -9,6 +9,8 @@ import shutil
 import sqlite3
 import tempfile
 import os
+import re
+import urllib.request
 import traceback
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -359,7 +361,6 @@ def _p(**kw):
 
 
 def main_menu(is_admin=False, morning_on=True):
-    """8 кнопок максимум — с запасом ниже лимита 10."""
     kb = VkKeyboard(one_time=False)
     kb.add_button('➕ Добавить погрузку', color=VkKeyboardColor.POSITIVE)
     kb.add_line()
@@ -387,7 +388,6 @@ def date_choice_menu():
 
 
 def clients_menu(clients, action='add', sid=None, page=0, per_page=4):
-    """4 клиента + навигация + 1 кнопка действия + отмена = 6 рядов."""
     kb = VkKeyboard(inline=True)
     start = page * per_page
     chunk = clients[start:start + per_page]
@@ -472,7 +472,6 @@ def after_save_menu():
 
 
 def stats_menu():
-    """6 кнопок в 3 рядах — минимальный безопасный набор."""
     kb = VkKeyboard(inline=True)
     kb.add_button('Сегодня', color=VkKeyboardColor.PRIMARY, payload=_p(cmd='stats', period='today'))
     kb.add_button('Вчера', color=VkKeyboardColor.PRIMARY, payload=_p(cmd='stats', period='yesterday'))
@@ -507,7 +506,6 @@ def edit_menu(sid):
 
 
 def day_actions(shipments, d_iso):
-    """До 20 отгрузок — 4 ряда по 5 + 1 ряд кнопок = 5 рядов."""
     kb = VkKeyboard(inline=True)
     shipments = shipments[:20]
     for i, s in enumerate(shipments):
@@ -527,19 +525,21 @@ def admin_menu():
     kb = VkKeyboard(inline=True)
     kb.add_button('💾 Скачать базу', color=VkKeyboardColor.PRIMARY,
                   payload=_p(cmd='download_db'))
+    kb.add_button('📥 Импорт Excel/CSV', color=VkKeyboardColor.POSITIVE,
+                  payload=_p(cmd='import_csv'))
+    kb.add_line()
     kb.add_button('📤 CSV (всё)', color=VkKeyboardColor.PRIMARY,
                   payload=_p(cmd='export_csv_all'))
-    kb.add_line()
     kb.add_button('📤 CSV (30 дн.)', color=VkKeyboardColor.SECONDARY,
                   payload=_p(cmd='export_csv'))
+    kb.add_line()
     kb.add_button('📅 Произвольно', color=VkKeyboardColor.SECONDARY,
                   payload=_p(cmd='stats', period='custom'))
-    kb.add_line()
     kb.add_button('⚖️ Сравнить недели', color=VkKeyboardColor.POSITIVE,
                   payload=_p(cmd='week_compare'))
+    kb.add_line()
     kb.add_button('🔔 Сводка', color=VkKeyboardColor.SECONDARY,
                   payload=_p(cmd='toggle_report'))
-    kb.add_line()
     kb.add_button('🏠 В меню', color=VkKeyboardColor.SECONDARY,
                   payload=_p(cmd='to_menu'))
     return kb.get_keyboard()
@@ -628,6 +628,30 @@ def parse_date(text):
     return None
 
 
+def parse_month_or_date(text):
+    """Понимает '01.2026', '15.01.2026', 'янв 2026'."""
+    text = str(text).strip()
+    for fmt in ('%m.%Y', '%m/%Y', '%Y-%m'):
+        try:
+            return datetime.strptime(text, fmt).date().replace(day=1)
+        except ValueError:
+            pass
+    for fmt in ('%d.%m.%Y', '%d.%m.%y', '%d/%m/%Y', '%Y-%m-%d', '%d-%m-%Y'):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            pass
+    months = {'янв': 1, 'фев': 2, 'мар': 3, 'апр': 4, 'май': 5, 'мая': 5,
+              'июн': 6, 'июл': 7, 'авг': 8, 'сен': 9, 'окт': 10, 'ноя': 11, 'дек': 12}
+    low = text.lower()
+    for name, m in months.items():
+        if name in low:
+            ym = re.search(r'(20\d{2})', low)
+            if ym:
+                return date(int(ym.group(1)), m, 1)
+    return None
+
+
 def ru_date(d):
     if isinstance(d, str):
         d = datetime.strptime(d, '%Y-%m-%d').date()
@@ -706,7 +730,8 @@ def show_help(user_id):
         "• 📊 Статистика за любой период\n"
         "• 📁 Справочник клиентов\n"
         "• 🔔 Утренняя сводка\n"
-        "• 📤 Экспорт в CSV\n\n"
+        "• 📤 Экспорт в CSV\n"
+        "• 📥 Импорт из Excel/CSV (админ)\n\n"
         f"🚛 Фур = тоннаж ÷ {fmt_num(TRUCK_CAPACITY)}\n"
         f"🕐 Часовой пояс: Уфа (UTC+{TIMEZONE_OFFSET_HOURS})"
     )
@@ -838,7 +863,167 @@ def show_stats(user_id, period=None, start=None, end=None):
     send(user_id, format_stats(title, stats), main_menu(is_admin(user_id)))
 
 
-# ════════════════════════════ CSV ════════════════════════════
+# ════════════════════════════ ИМПОРТ (CSV + XLSX) ════════════════════════════
+
+def _import_rows(user_id, rows):
+    """Принимает список списков (первая строка — заголовки)."""
+    if not rows or len(rows) < 2:
+        return 0, 0, ["Нужна хотя бы одна строка данных после заголовка"]
+
+    header = [str(h or '').strip().lower() for h in rows[0]]
+    idx_client = idx_date = idx_tonnage = None
+    for i, h in enumerate(header):
+        if idx_client is None and ('клиент' in h or 'контрагент' in h or
+                                    'наименование' in h or h == 'client'):
+            idx_client = i
+        elif idx_date is None and ('дата' in h or 'месяц' in h or
+                                    'период' in h or h in ('date', 'month')):
+            idx_date = i
+        elif idx_tonnage is None and ('тонн' in h or 'вес' in h or
+                                       'масса' in h or h in ('tonnage', 'weight')):
+            idx_tonnage = i
+
+    if idx_client is None or idx_date is None or idx_tonnage is None:
+        if len(header) >= 3:
+            idx_client, idx_date, idx_tonnage = 0, 1, 2
+        else:
+            return 0, 0, ["Не удалось определить колонки. Нужны: Клиент | Дата | Тоннаж"]
+
+    imported = 0
+    skipped = 0
+    errors = []
+    for rn, r in enumerate(rows[1:], start=2):
+        try:
+            if r is None or len(r) <= max(idx_client, idx_date, idx_tonnage):
+                skipped += 1
+                continue
+
+            def _cell(v):
+                if v is None:
+                    return ''
+                if isinstance(v, datetime):
+                    return v
+                return str(v).strip()
+
+            client = _cell(r[idx_client])
+            date_raw = r[idx_date]
+            tonnage_raw = _cell(r[idx_tonnage]).replace(',', '.').replace(' ', '')
+
+            if not client or tonnage_raw == '':
+                skipped += 1
+                continue
+
+            if isinstance(date_raw, datetime):
+                d = date_raw.date()
+            elif isinstance(date_raw, date):
+                d = date_raw
+            else:
+                d = parse_month_or_date(_cell(date_raw))
+
+            if not d:
+                errors.append(f"Строка {rn}: не понял дату '{date_raw}'")
+                skipped += 1
+                continue
+
+            tonnage = float(tonnage_raw)
+            if tonnage <= 0:
+                raise ValueError("тоннаж <= 0")
+
+            add_shipment(client, tonnage, d.isoformat(), user_id, comment='импорт')
+            imported += 1
+        except Exception as e:
+            errors.append(f"Строка {rn}: {e}")
+            skipped += 1
+
+    return imported, skipped, errors
+
+
+def import_csv_data(user_id, data_bytes, filename=''):
+    """Разбирает CSV или XLSX. Возвращает (imported, skipped, errors)."""
+    name = (filename or '').lower()
+
+    if name.endswith('.xlsx') or name.endswith('.xlsm'):
+        try:
+            from openpyxl import load_workbook
+        except ImportError:
+            return 0, 0, ["Библиотека openpyxl не установлена на сервере"]
+        try:
+            wb = load_workbook(io.BytesIO(data_bytes), data_only=True)
+            ws = wb.active
+            rows = [list(r) for r in ws.iter_rows(values_only=True)]
+        except Exception as e:
+            return 0, 0, [f"Не удалось прочитать Excel: {e}"]
+        return _import_rows(user_id, rows)
+
+    if name.endswith('.xls'):
+        return 0, 0, ["Формат .xls не поддерживается. В Excel: Файл → Сохранить как → .xlsx"]
+
+    try:
+        text = data_bytes.decode('utf-8-sig')
+    except UnicodeDecodeError:
+        try:
+            text = data_bytes.decode('cp1251')
+        except Exception:
+            return 0, 0, ["Не удалось прочитать файл (UTF-8 или Windows-1251)"]
+
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return 0, 0, ["Файл пуст"]
+
+    first = lines[0]
+    if ';' in first:
+        delim = ';'
+    elif '\t' in first:
+        delim = '\t'
+    elif ',' in first:
+        delim = ','
+    else:
+        return 0, 0, ["Не найден разделитель (; , или таб)"]
+
+    rows = list(csv.reader(lines, delimiter=delim))
+    return _import_rows(user_id, rows)
+
+
+def handle_csv_attachment(user_id, attachments):
+    for att in attachments:
+        if att.get('type') != 'doc':
+            continue
+        doc = att.get('doc') or {}
+        url = doc.get('url')
+        filename = doc.get('title', '')
+        if not url:
+            continue
+        send(user_id, f"📥 Скачиваю файл: {filename}")
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = resp.read()
+        except Exception as e:
+            send(user_id, f"❌ Не удалось скачать файл: {e}")
+            clear_state(user_id)
+            return
+
+        send(user_id, "⚙️ Обрабатываю...")
+        imported, skipped, errors = import_csv_data(user_id, data, filename)
+        clear_state(user_id)
+
+        result = [f"📥 Импорт завершён:", f"• Добавлено: {imported}"]
+        if skipped:
+            result.append(f"• Пропущено: {skipped}")
+        if errors:
+            result.append("")
+            result.append("Примеры ошибок:")
+            result.extend(errors[:5])
+        result.append("")
+        result.append("Проверьте: 📊 Статистика → Этот год")
+        send(user_id, "\n".join(result), admin_menu())
+        return
+
+    send(user_id, "❌ Во вложении не найден файл. Отправьте документ.")
+    clear_state(user_id)
+
+
+# ════════════════════════════ CSV ЭКСПОРТ ════════════════════════════
 
 def upload_csv_doc(user_id, data, filename):
     fd, path = tempfile.mkstemp(suffix='.csv')
@@ -1141,6 +1326,28 @@ def handle_payload(user_id, payload):
         label = 'включена' if new_val else 'выключена'
         send(user_id, f"Утренняя сводка {label}.",
              admin_menu() if is_admin(user_id) else main_menu(is_admin(user_id)))
+    elif cmd == 'import_csv':
+        if not is_admin(user_id):
+            send(user_id, "❌ Только для администраторов.")
+            return
+        update_state(user_id, awaiting='csv_import')
+        text = (
+            "📥 Импорт данных\n\n"
+            "Отправьте файл как документ (скрепка → Документ).\n"
+            "Поддерживаются: .xlsx и .csv\n\n"
+            "Формат (первая строка — заголовок):\n"
+            "Клиент | Дата | Тоннаж\n"
+            "ООО Ромашка | 01.2026 | 150\n"
+            "ООО Ромашка | 02.2026 | 180\n"
+            "ИП Иванов | 01.2026 | 80\n\n"
+            "Дата может быть:\n"
+            "• 01.2026 — месяц (сохранится как 1-е число)\n"
+            "• 15.01.2026 — конкретный день\n"
+            "• янв 2026 — русский месяц\n\n"
+            "Колонки бот ищет по названиям (Клиент/Дата/Тоннаж).\n"
+            "Если названий нет — берёт первые три по порядку."
+        )
+        send(user_id, text, admin_menu())
     elif cmd == 'pick_date':
         d = payload.get('date')
         if d == 'today':
@@ -1395,6 +1602,10 @@ def handle_text(user_id, text):
         start = state.get('chart_start')
         clear_state(user_id)
         show_chart(user_id, period='custom', start=start, end=d.isoformat())
+    elif awaiting == 'csv_import':
+        clear_state(user_id)
+        send(user_id, "Импорт отменён. Используйте кнопки меню.",
+             main_menu(is_admin(user_id)))
     elif text == '➕ Добавить погрузку':
         start_add(user_id)
     elif text == '📋 Сегодня':
@@ -1501,6 +1712,15 @@ def _extract_payload(event):
         return None
 
 
+def _extract_attachments(event):
+    atts = getattr(event, 'attachments', None)
+    if not atts:
+        return []
+    if isinstance(atts, dict):
+        return atts.get('attachments', [])
+    return atts
+
+
 def main():
     print(f"[bot] starting at {tz_now()} (UTC+{TIMEZONE_OFFSET_HOURS})")
 
@@ -1511,7 +1731,7 @@ def main():
         print("❌ VK_GROUP_ID не задан.")
         return
     if longpoll is None:
-        print("❌ Long Poll не инициализирован (проверьте токен).")
+        print("❌ Long Poll не инициализирован.")
         return
 
     threading.Thread(target=_run_keepalive_server, daemon=True).start()
@@ -1523,6 +1743,21 @@ def main():
         if event.type == VkEventType.MESSAGE_NEW and event.to_me:
             user_id = event.user_id
             upsert_user(user_id)
+
+            st = get_state(user_id)
+            if st.get('awaiting') == 'csv_import':
+                atts = _extract_attachments(event)
+                docs = [a for a in atts if a.get('type') == 'doc']
+                if docs:
+                    try:
+                        handle_csv_attachment(user_id, docs)
+                    except Exception:
+                        traceback.print_exc()
+                        send(user_id, "❌ Ошибка при импорте. Попробуйте ещё раз.")
+                        clear_state(user_id)
+                    continue
+                clear_state(user_id)
+
             payload = _extract_payload(event)
             if payload and payload.get('cmd'):
                 try:
