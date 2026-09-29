@@ -968,15 +968,14 @@ def _import_rows(user_id, rows):
 
 def import_1c_data(user_id, rows):
     """
-    Парсит выгрузку из 1С «Выполнение сборки и отгрузки товаров».
-
+    Диагностическая версия импорта из 1С.
+    Пишет первые 30 непустых строк в лог Bothost, чтобы понять где вес.
     Логика:
-      - шапка отчёта, служебные строки — пропуск
+      - служебные строки — пропуск
       - «Расходный ордер ...» — пропуск
       - «Акт С/М ...» — пропуск
       - строки с артикулами (число в A) — пропуск
-      - ВСЁ ОСТАЛЬНОЕ — клиент, вес берём из последней колонки (кг),
-        это итог по клиенту за период. Дата — первый «Расходный ордер» под ним.
+      - ВСЁ ОСТАЛЬНОЕ — КЛИЕНТ. Вес берём из последней колонки (кг).
     """
     n = len(rows)
     imported = 0
@@ -989,6 +988,19 @@ def import_1c_data(user_id, rows):
         'выполнение сборки', 'параметры', 'отбор',
         'склад', 'получатель', 'регистратор', 'артикул', 'итого',
     )
+
+    # ─── ДИАГНОСТИКА: печатаем первые 30 непустых строк ───
+    print("[import-1c] === ДИАГНОСТИКА ===")
+    print(f"[import-1c] Всего строк в файле: {n}")
+    shown = 0
+    for r in rows:
+        if not r: continue
+        if all(c is None or str(c).strip() == '' for c in r): continue
+        cells = [repr(c) for c in r]
+        print(f"[import-1c] RAW: {cells}")
+        shown += 1
+        if shown >= 30: break
+    print("[import-1c] === КОНЕЦ ДИАГНОСТИКИ ===")
 
     for idx, row in enumerate(rows):
         rn = idx + 1
@@ -1006,21 +1018,15 @@ def import_1c_data(user_id, rows):
                 continue
             a_low = a_str.lower()
 
-            # служебные
             if any(a_low.startswith(p) for p in service_prefixes):
                 continue
-
-            # отгрузки и акты
             if 'расходный ордер' in a_low:
                 continue
             if a_low.startswith('акт с/м'):
                 continue
-
-            # товары (артикул — число)
             if a_str.replace('.', '').replace(',', '').replace(' ', '').isdigit():
                 continue
 
-            # если G пусто — ищем числовое значение справа
             if g is None:
                 for cell in reversed(r):
                     if cell is None: continue
@@ -1050,7 +1056,6 @@ def import_1c_data(user_id, rows):
 
             weight_t = round(weight_kg / 1000.0, 3)
 
-            # дата — первый «Расходный ордер» ниже
             shipment_date = None
             j = idx + 1
             while j < n:
