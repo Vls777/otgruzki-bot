@@ -211,7 +211,6 @@ def delete_shipment(shipment_id):
 
 
 def delete_shipments_period(start_iso, end_iso):
-    """Удаляет все отгрузки за период (включительно). Возвращает кол-во."""
     with get_db() as conn:
         cur = conn.execute("""DELETE FROM shipments
             WHERE shipment_date BETWEEN ? AND ?""",
@@ -919,7 +918,6 @@ def import_from_text(user_id, text):
 
 
 def _import_rows(user_id, rows):
-    """Обычный формат: Клиент | Дата | Тоннаж."""
     if not rows or len(rows) < 2:
         return 0, 0, ["Нужна хотя бы одна строка данных"]
     header = [str(h or '').strip().lower() for h in rows[0]]
@@ -972,133 +970,130 @@ def import_1c_data(user_id, rows):
     """
     Парсит выгрузку из 1С «Выполнение сборки и отгрузки товаров».
 
-    Формат:
-      <Склад>                        — заголовок, пропускаем
-      <Клиент> | ... | <Итог кг>     — берём итог по клиенту как ОДНУ погрузку
-        Расходный ордер ... от ДД.ММ.ГГГГ | ... | <кг>
-        <товары>
-        ...
-      <Следующий клиент> | ... | <Итог кг>
-      ...
+    Логика:
+      - шапка отчёта, служебные строки — пропуск
+      - «Расходный ордер ...» — пропуск
+      - «Акт С/М ...» — пропуск
+      - строки с артикулами (число в A) — пропуск
+      - ВСЁ ОСТАЛЬНОЕ — клиент, вес берём из последней колонки (кг),
+        это итог по клиенту за период. Дата — первый «Расходный ордер» под ним.
     """
     n = len(rows)
-    next_nonempty = [None] * n
-    last = None
-    for i in range(n - 1, -1, -1):
-        next_nonempty[i] = last
-        r = rows[i]
-        if r and any(c is not None and str(c).strip() for c in r):
-            last = r
-
     imported = 0
     skipped = 0
     errors = []
     samples = []
     date_re = re.compile(r'от\s+(\d{2}\.\d{2}\.\d{4})')
 
-    idx = 0
-    while idx < n:
-        row = rows[idx]
+    service_prefixes = (
+        'выполнение сборки', 'параметры', 'отбор',
+        'склад', 'получатель', 'регистратор', 'артикул', 'итого',
+    )
+
+    for idx, row in enumerate(rows):
         rn = idx + 1
         try:
             if not row:
-                idx += 1; continue
+                continue
             r = list(row)
-            if len(r) < 7: r = r + [None] * (7 - len(r))
-            a = r[0]; b = r[1] if len(r) > 1 else None
-            f = r[5] if len(r) > 5 else None
-            g = r[6] if len(r) > 6 else None
+            if len(r) < 7:
+                r = r + [None] * (7 - len(r))
+            a = r[0]
+            g = r[6]
+
             a_str = str(a).strip() if a is not None else ''
             if not a_str:
-                idx += 1; continue
+                continue
             a_low = a_str.lower()
 
-            # служебные заголовки — пропускаем
-            if (a_low.startswith('выполнение сборки') or
-                a_low.startswith('параметры') or
-                a_low.startswith('отбор') or
-                a_low in ('склад', 'получатель', 'регистратор', 'артикул', 'итого')):
-                idx += 1; continue
+            # служебные
+            if any(a_low.startswith(p) for p in service_prefixes):
+                continue
 
-            # строка отгрузки внутри клиента — пропускаем
-            if 'расходный ордер' in a_low or a_low.startswith('акт с/м'):
-                idx += 1; continue
+            # отгрузки и акты
+            if 'расходный ордер' in a_low:
+                continue
+            if a_low.startswith('акт с/м'):
+                continue
 
-            # строка товара — пропускаем
+            # товары (артикул — число)
             if a_str.replace('.', '').replace(',', '').replace(' ', '').isdigit():
-                idx += 1; continue
+                continue
 
-            # клиент — если B и F пустые и есть вес в G, и следующая непустая строка = Расходный ордер
-            b_str = str(b).strip() if b is not None else ''
-            f_str = str(f).strip() if f is not None else ''
-            if b_str != '' or f_str != '':
-                idx += 1; continue
+            # если G пусто — ищем числовое значение справа
+            if g is None:
+                for cell in reversed(r):
+                    if cell is None: continue
+                    s = str(cell).replace(',', '.').replace(' ', '').strip()
+                    if s and re.match(r'^\d+(\.\d+)?$', s):
+                        g = cell
+                        break
 
-            nr = next_nonempty[idx]
-            if nr is None:
-                idx += 1; continue
-            nr_a = str(nr[0]).strip().lower() if nr[0] is not None else ''
-            if 'расходный ордер' not in nr_a:
-                idx += 1; continue
+            if g is None:
+                skipped += 1
+                continue
 
-            # Это клиент. Берём итоговый вес из колонки G (в кг).
-            g_str = str(g).replace(',', '.').replace(' ', '').strip() if g is not None else ''
+            g_str = str(g).replace(',', '.').replace(' ', '').strip()
             if not g_str:
-                # если итог пуст — ищем первый расходный ордер ниже и берём его дату
-                idx += 1; continue
+                skipped += 1
+                continue
 
             try:
                 weight_kg = float(g_str)
             except ValueError:
-                errors.append(f"Строка {rn}: не понял вес '{g_str}'")
-                idx += 1; skipped += 1; continue
+                skipped += 1
+                continue
 
             if weight_kg <= 0:
-                idx += 1; skipped += 1; continue
+                skipped += 1
+                continue
+
             weight_t = round(weight_kg / 1000.0, 3)
 
-            # дата — берём дату ПЕРВОГО расходного ордера этого клиента
-            j = idx + 1
+            # дата — первый «Расходный ордер» ниже
             shipment_date = None
+            j = idx + 1
             while j < n:
                 rj = rows[j]
-                if not rj: j += 1; continue
+                if not rj:
+                    j += 1
+                    continue
                 aj = str(rj[0]).strip() if rj[0] is not None else ''
                 aj_low = aj.lower()
                 if 'расходный ордер' in aj_low:
                     m = date_re.search(aj)
                     if m:
                         try:
-                            shipment_date = datetime.strptime(m.group(1), '%d.%m.%Y').date()
+                            shipment_date = datetime.strptime(
+                                m.group(1), '%d.%m.%Y').date()
                         except ValueError:
                             pass
                     break
-                # если встретили следующего клиента — прерываем
-                bj = str(rj[1]).strip() if len(rj) > 1 and rj[1] is not None else ''
-                fj = str(rj[5]).strip() if len(rj) > 5 and rj[5] is not None else ''
-                if bj == '' and fj == '' and not aj.replace('.','').replace(',','').replace(' ','').isdigit():
-                    break
+                if aj and not aj.replace('.', '').replace(',', '').replace(' ', '').isdigit():
+                    if not any(aj_low.startswith(p) for p in service_prefixes):
+                        if 'расходный ордер' not in aj_low and not aj_low.startswith('акт с/м'):
+                            break
                 j += 1
 
             if not shipment_date:
-                # fallback — сегодня
                 shipment_date = tz_today()
 
             add_shipment(a_str, weight_t, shipment_date.isoformat(),
                          user_id, comment='1С')
 
-            if len(samples) < 10:
-                samples.append(f"{a_str[:50]} | {shipment_date.isoformat()} | {weight_kg} кг → {weight_t} т")
+            if len(samples) < 15:
+                samples.append(
+                    f"{a_str[:55]} | {shipment_date.isoformat()} | "
+                    f"{weight_kg} кг → {weight_t} т")
 
             imported += 1
 
         except Exception as e:
             errors.append(f"Строка {rn}: {e}")
             skipped += 1
-        idx += 1
 
     if samples:
-        print("[import-1c] Примеры импортированных клиентов:")
+        print("[import-1c] Примеры:")
         for s in samples:
             print(f"  • {s}")
     print(f"[import-1c] Всего: imported={imported}, skipped={skipped}")
@@ -1121,7 +1116,6 @@ def import_csv_data(user_id, data_bytes, filename=''):
         except Exception as e:
             return 0, 0, [f"Не удалось прочитать Excel: {e}"]
 
-        # определяем формат 1С
         for r in rows[:300]:
             if r and r[0] and 'расходный ордер' in str(r[0]).lower():
                 return import_1c_data(user_id, rows)
@@ -1155,7 +1149,6 @@ def import_csv_data(user_id, data_bytes, filename=''):
 
 
 def handle_csv_attachment(user_id, attachments):
-    # Автобэкап перед импортом — можно откатить
     try:
         make_backup('before-import')
     except Exception:
@@ -1469,7 +1462,6 @@ def handle_payload(user_id, payload):
         send(user_id, f"Утренняя сводка {label}.",
              main_menu(is_admin(user_id), bool(new_val)))
 
-    # ─── Импорт текстом ───
     elif cmd == 'import_text':
         if not is_admin(user_id):
             send(user_id, "❌ Только для администраторов."); return
@@ -1482,7 +1474,6 @@ def handle_payload(user_id, payload):
                 "Заголовок (Клиент Дата Тоннаж) — можно, бот пропустит.")
         send(user_id, text, cancel_menu())
 
-    # ─── Импорт файла ───
     elif cmd == 'import_csv':
         if not is_admin(user_id):
             send(user_id, "❌ Только для администраторов."); return
@@ -1490,7 +1481,6 @@ def handle_payload(user_id, payload):
         send(user_id, "📥 Отправьте файл .xlsx из 1С как документ (скрепка → Документ).",
              cancel_menu())
 
-    # ─── ОТКАТ К БЭКАПУ ───
     elif cmd == 'rollback_menu':
         if not is_admin(user_id):
             send(user_id, "❌ Только для администраторов."); return
@@ -1518,7 +1508,6 @@ def handle_payload(user_id, payload):
         else:
             send(user_id, f"❌ Не удалось откатить: {err}", admin_menu())
 
-    # ─── ОЧИСТКА ПЕРИОДА ───
     elif cmd == 'clear_period':
         if not is_admin(user_id):
             send(user_id, "❌ Только для администраторов."); return
@@ -1544,7 +1533,6 @@ def handle_payload(user_id, payload):
         update_state(user_id, awaiting='clear_period_final_confirm',
                      clear_start=s.isoformat(), clear_end=e.isoformat(),
                      clear_label=label, clear_count=cnt)
-        # Показываем кнопки подтверждения
         kb = VkKeyboard(inline=True)
         kb.add_button(f'✅ Да, удалить {cnt}', color=VkKeyboardColor.NEGATIVE,
                       payload=_p(cmd='clear_period_do'))
@@ -1575,7 +1563,6 @@ def handle_payload(user_id, payload):
                       f"Если это была ошибка — ⚙️ Настройки → ↩️ Откатить базу.",
              admin_menu())
 
-    # ─── Обычные действия ───
     elif cmd == 'pick_date':
         d = payload.get('date')
         if d == 'today': target = tz_today()
@@ -1708,7 +1695,6 @@ def handle_payload(user_id, payload):
 
 
 def _period_bounds(period):
-    """Возвращает (start_date, end_date, label) для периода."""
     today = tz_today()
     if period == 'today':
         return today, today, f"Сегодня ({ru_date(today)})"
@@ -1752,7 +1738,6 @@ def handle_text(user_id, text):
     state = get_state(user_id)
     awaiting = state.get('awaiting')
 
-    # ─── Импорт текстом ───
     if awaiting == 'text_import':
         if len(text) < 5:
             send(user_id, "❌ Слишком короткий текст. Пришлите данные или нажмите «Отмена».",
@@ -1768,13 +1753,11 @@ def handle_text(user_id, text):
         send(user_id, "\n".join(result), admin_menu())
         return
 
-    # ─── Импорт файла (текстовое сообщение в этом режиме) ───
     if awaiting == 'csv_import':
         send(user_id, "📎 Пришлите файл .xlsx как документ (скрепка → Документ) "
                       "или нажмите «Отмена».", cancel_menu())
         return
 
-    # ─── Очистка периода — ввод произвольных дат ───
     if awaiting == 'clear_period_custom_start':
         d = parse_date(text)
         if not d:
@@ -1814,7 +1797,6 @@ def handle_text(user_id, text):
                       f"Нажмите «Да, удалить» для подтверждения.", kb.get_keyboard())
         return
 
-    # ─── Обычные шаги диалога ───
     if awaiting == 'add_custom_date':
         d = parse_date(text)
         if not d:
