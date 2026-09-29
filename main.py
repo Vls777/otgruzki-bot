@@ -968,14 +968,18 @@ def _import_rows(user_id, rows):
 
 def import_1c_data(user_id, rows):
     """
-    Диагностическая версия импорта из 1С.
-    Пишет первые 30 непустых строк в лог Bothost, чтобы понять где вес.
+    Импорт из 1С «Выполнение сборки и отгрузки товаров».
+
+    Структура файла:
+      A: клиент/служебное
+      B..F: служебные колонки (обычно пустые у клиента)
+      G: служебная колонка «Отгружено» (по ней обычно пусто)
+      H: вес нетто, кг (число вида 12 569,800)
+
     Логика:
       - служебные строки — пропуск
-      - «Расходный ордер ...» — пропуск
-      - «Акт С/М ...» — пропуск
-      - строки с артикулами (число в A) — пропуск
-      - ВСЁ ОСТАЛЬНОЕ — КЛИЕНТ. Вес берём из последней колонки (кг).
+      - «Расходный ордер ...», «Акт С/М ...», строки с артикулами — пропуск
+      - всё остальное — КЛИЕНТ, вес берём из колонки H (r[7])
     """
     n = len(rows)
     imported = 0
@@ -989,18 +993,23 @@ def import_1c_data(user_id, rows):
         'склад', 'получатель', 'регистратор', 'артикул', 'итого',
     )
 
-    # ─── ДИАГНОСТИКА: печатаем первые 30 непустых строк ───
-    print("[import-1c] === ДИАГНОСТИКА ===")
-    print(f"[import-1c] Всего строк в файле: {n}")
+    # диагностика в ВК — первые 10 непустых строк
+    diag_lines = ["🔬 Диагностика файла (первые 10 строк):", ""]
     shown = 0
     for r in rows:
         if not r: continue
         if all(c is None or str(c).strip() == '' for c in r): continue
-        cells = [repr(c) for c in r]
-        print(f"[import-1c] RAW: {cells}")
+        cells = [str(c) if c is not None else "—" for c in r]
+        cells = [c[:18] for c in cells]
+        diag_lines.append(f"{shown+1}. [{' | '.join(cells)}]")
         shown += 1
-        if shown >= 30: break
-    print("[import-1c] === КОНЕЦ ДИАГНОСТИКИ ===")
+        if shown >= 10: break
+    diag_lines.append("")
+    diag_lines.append(f"Всего строк в файле: {n}")
+    try:
+        send(user_id, "\n".join(diag_lines))
+    except Exception:
+        traceback.print_exc()
 
     for idx, row in enumerate(rows):
         rn = idx + 1
@@ -1008,10 +1017,11 @@ def import_1c_data(user_id, rows):
             if not row:
                 continue
             r = list(row)
-            if len(r) < 7:
-                r = r + [None] * (7 - len(r))
+            if len(r) < 8:
+                r = r + [None] * (8 - len(r))
             a = r[0]
-            g = r[6]
+            # Вес в колонке H (8-я), т.е. индекс 7
+            h = r[7] if len(r) > 7 else None
 
             a_str = str(a).strip() if a is not None else ''
             if not a_str:
@@ -1027,19 +1037,21 @@ def import_1c_data(user_id, rows):
             if a_str.replace('.', '').replace(',', '').replace(' ', '').isdigit():
                 continue
 
-            if g is None:
+            # вес именно из H. Если H пусто — ищем числовое значение справа налево
+            weight_cell = h
+            if weight_cell is None or str(weight_cell).strip() == '':
                 for cell in reversed(r):
                     if cell is None: continue
                     s = str(cell).replace(',', '.').replace(' ', '').strip()
                     if s and re.match(r'^\d+(\.\d+)?$', s):
-                        g = cell
+                        weight_cell = cell
                         break
 
-            if g is None:
+            if weight_cell is None:
                 skipped += 1
                 continue
 
-            g_str = str(g).replace(',', '.').replace(' ', '').strip()
+            g_str = str(weight_cell).replace(',', '.').replace(' ', '').strip()
             if not g_str:
                 skipped += 1
                 continue
@@ -1098,10 +1110,11 @@ def import_1c_data(user_id, rows):
             skipped += 1
 
     if samples:
-        print("[import-1c] Примеры:")
-        for s in samples:
-            print(f"  • {s}")
-    print(f"[import-1c] Всего: imported={imported}, skipped={skipped}")
+        try:
+            send(user_id, "📋 Примеры импортированных:\n" +
+                 "\n".join(f"• {s}" for s in samples))
+        except Exception:
+            traceback.print_exc()
 
     return imported, skipped, errors
 
