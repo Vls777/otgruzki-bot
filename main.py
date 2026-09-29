@@ -1693,22 +1693,16 @@ def _extract_payload(event):
 
 
 def _extract_attachments(event):
-    """Возвращает список вложений из сообщения, включая документы.
-    Поддерживает и готовый список (list), и сырой long poll формат (dict)."""
+    """Возвращает список вложений-документов."""
     atts = getattr(event, 'attachments', None)
     if not atts:
         return []
-
-    # Уже список объектов
     if isinstance(atts, list):
         return atts
-
-    # Сырой dict из long poll: {'attach1': 'doc123_456', 'attach1_type': 'doc'}
     if isinstance(atts, dict):
         inner = atts.get('attachments')
         if isinstance(inner, list):
             return inner
-
         result = []
         i = 1
         while True:
@@ -1719,7 +1713,6 @@ def _extract_attachments(event):
             if typ == 'doc' and ref:
                 try:
                     if isinstance(ref, str) and ref.startswith('doc'):
-                        # ref вида 'doc123_456'
                         parts = ref[3:].split('_')
                         owner_id = int(parts[0])
                         doc_id = int(parts[1])
@@ -1731,8 +1724,42 @@ def _extract_attachments(event):
                     traceback.print_exc()
             i += 1
         return result
-
     return []
+
+
+def _collect_docs_for_import(event, user_id):
+    """Собирает документы из события всеми доступными способами."""
+    docs = []
+
+    # 1) через _extract_attachments
+    atts = _extract_attachments(event)
+    for a in atts:
+        if isinstance(a, dict) and a.get('type') == 'doc':
+            docs.append(a)
+
+    # 2) если пусто — тянем сообщение целиком через API
+    if not docs:
+        msg_id = getattr(event, 'message_id', None)
+        if msg_id:
+            try:
+                resp = vk.messages.getById(message_ids=msg_id)
+                items = resp.get('items') or []
+                if items:
+                    for a in (items[0].get('attachments') or []):
+                        if isinstance(a, dict) and a.get('type') == 'doc':
+                            docs.append(a)
+            except Exception:
+                traceback.print_exc()
+
+    # 3) диагностика в лог
+    try:
+        raw_atts = getattr(event, 'attachments', None)
+        print(f"[import] user={user_id} msg_id={getattr(event,'message_id',None)} "
+              f"raw_atts={raw_atts!r} docs_found={len(docs)}")
+    except Exception:
+        pass
+
+    return docs
 
 
 def main():
@@ -1753,8 +1780,7 @@ def main():
 
             st = get_state(user_id)
             if st.get('awaiting') == 'csv_import':
-                atts = _extract_attachments(event)
-                docs = [a for a in atts if isinstance(a, dict) and a.get('type') == 'doc']
+                docs = _collect_docs_for_import(event, user_id)
                 if docs:
                     try: handle_csv_attachment(user_id, docs)
                     except Exception:
