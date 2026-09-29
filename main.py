@@ -884,42 +884,38 @@ def show_stats(user_id, period=None, start=None, end=None):
 
 def make_day_image_png(d, shipments):
     """
-    Рисует PNG-картинку формата А4 вертикально (210×297 мм) с погрузками на день.
-    Крупные строки, автоподбор размера шрифта — всё умещается.
+    PNG формата А4 вертикально (210×297 мм) с погрузками на день.
+    Крупные строки, автоподбор шрифта.
     """
-    # A4 в дюймах: 210мм = 8.27", 297мм = 11.69"
     fig = plt.figure(figsize=(8.27, 11.69), dpi=150)
-    ax = fig.add_axes([0, 0, 1, 1])   # занимаем всю фигуру
+    ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.axis('off')
 
     date_str = ru_date(d)
-
-    # ── Итоги ──
     total_t = sum(s['tonnage'] for s in shipments)
     total_trucks = round(total_t / TRUCK_CAPACITY, 2)
     cnt = len(shipments)
 
-    # ── Цвета ──
     COLOR_DARK = '#1a3d63'
     COLOR_ACCENT = '#4a76a8'
     COLOR_LIGHT_ROW = '#f0f4f9'
     COLOR_LINE = '#d0d9e4'
 
-    # ── Шапка ──
+    # шапка
     ax.add_patch(Rectangle((0, 0.94), 1, 0.06,
                             facecolor=COLOR_DARK, edgecolor='none'))
     ax.text(0.5, 0.97, 'ВЕЛЕС · Отгрузки склада',
             ha='center', va='center', fontsize=14, color='white',
             fontweight='bold')
 
-    # ── Дата ──
+    # дата
     ax.text(0.5, 0.905, f'📋 Погрузки на {date_str}',
             ha='center', va='center', fontsize=22, color=COLOR_DARK,
             fontweight='bold')
 
-    # ── Сводка (под датой) ──
+    # сводка
     summary_y = 0.875
     ax.add_patch(Rectangle((0.05, summary_y - 0.018), 0.9, 0.036,
                             facecolor='#e8eef6', edgecolor='none'))
@@ -931,61 +927,44 @@ def make_day_image_png(d, shipments):
     if not shipments:
         ax.text(0.5, 0.5, '— нет погрузок —',
                 ha='center', va='center', fontsize=24, color='#aaa')
-        plt.savefig(buf := io.BytesIO(), format='png',
-                    dpi=150, facecolor='white')
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=150, facecolor='white')
         plt.close(fig)
         buf.seek(0)
         return buf.read()
 
-    # ── Область для строк ──
     area_top = 0.845
     area_bottom = 0.105
     area_h = area_top - area_bottom
-
-    # отступы
     pad_left = 0.05
     pad_right = 0.05
     content_w = 1 - pad_left - pad_right
-
-    # позиция правого края для веса
     right_edge = 1 - pad_right
 
-    # сколько строк поместится — подбираем высоту
     row_count = len(shipments)
-    row_h_max = 0.055          # максимальная высота строки
-    row_h_min = 0.028          # минимальная высота строки
-    row_h = min(row_h_max, area_h / row_count)
-
-    # если строк слишком много и row_h < row_h_min — всё равно рисуем мелко
+    row_h = min(0.055, area_h / row_count)
     font_main = max(9, min(14, int(row_h * 260)))
     font_weight = max(9, min(13, int(row_h * 240)))
     font_cmt = max(7, min(10, int(row_h * 200)))
 
-    # рисуем с верхней границы
     y_cursor = area_top
-
     for i, s in enumerate(shipments):
         row_top = y_cursor
         row_bottom = y_cursor - row_h
         y_center = (row_top + row_bottom) / 2
 
-        # чередующийся фон
         if i % 2 == 0:
             ax.add_patch(Rectangle((pad_left, row_bottom),
                                     content_w, row_h,
                                     facecolor=COLOR_LIGHT_ROW,
                                     edgecolor='none'))
-
-        # разделительная линия снизу
         ax.plot([pad_left, right_edge], [row_bottom, row_bottom],
                 color=COLOR_LINE, linewidth=0.8)
 
-        # номер
         ax.text(pad_left + 0.005, y_center, f'{i+1}.',
                 ha='left', va='center', fontsize=font_main,
                 color='#9aa7b5')
 
-        # клиент — обрезаем до 40 символов, чтобы влезло
         name = s['client_name']
         max_chars = 44
         if len(name) > max_chars:
@@ -994,13 +973,11 @@ def make_day_image_png(d, shipments):
                 ha='left', va='center', fontsize=font_main,
                 color=COLOR_DARK)
 
-        # вес справа
         w_str = f"{fmt_num(s['tonnage'])} т · {fmt_num(s['trucks'])} фур"
         ax.text(right_edge - 0.005, y_center, w_str,
                 ha='right', va='center', fontsize=font_weight,
                 fontweight='bold', color=COLOR_ACCENT)
 
-        # комментарий — мелкой строкой под именем (если место есть)
         if s.get('comment') and row_h > 0.035:
             cmt = s['comment']
             if len(cmt) > 60:
@@ -1012,7 +989,6 @@ def make_day_image_png(d, shipments):
 
         y_cursor = row_bottom
 
-    # ── Полоса итогов внизу ──
     ax.add_patch(Rectangle((0, 0.03), 1, 0.06,
                             facecolor=COLOR_ACCENT, edgecolor='none'))
     ax.text(0.5, 0.06,
@@ -1020,7 +996,6 @@ def make_day_image_png(d, shipments):
             ha='center', va='center', fontsize=15, color='white',
             fontweight='bold')
 
-    # ── Нижняя подпись ──
     ax.text(0.5, 0.012,
             f'Сформировано ботом · {tz_now().strftime("%d.%m.%Y %H:%M")}',
             ha='center', va='center', fontsize=8, color='#b0b8c2')
@@ -1034,7 +1009,6 @@ def make_day_image_png(d, shipments):
 
 
 def show_day_image(user_id, d):
-    """Отправляет картинку формата А4 с погрузками на день."""
     shipments = get_shipments_by_date(d)
     png = make_day_image_png(d, shipments)
     try:
@@ -1146,7 +1120,7 @@ def _import_rows(user_id, rows):
 def import_1c_data(user_id, rows):
     """
     Импорт из 1С «Выполнение сборки и отгрузки товаров».
-    Вес нетто — в колонке H (индекс 7).
+    Вес нетто — колонка H (индекс 7).
     """
     n = len(rows)
     imported = 0
@@ -1384,13 +1358,59 @@ def upload_csv_doc(user_id, data, filename):
 
 
 def upload_photo_bytes(user_id, photo_bytes):
+    """Загружает фото в ВК двумя способами с fallback. Возвращает attachment-строку."""
     fd, path = tempfile.mkstemp(suffix='.png')
     os.close(fd)
     try:
-        with open(path, 'wb') as f: f.write(photo_bytes)
+        with open(path, 'wb') as f:
+            f.write(photo_bytes)
+
         upload = vk_api.VkUpload(vk_session)
-        photo = upload.photo_messages(photos=path, peer_id=user_id)[0]
-        return f"photo{photo['owner_id']}_{photo['id']}"
+
+        # ── Способ 1: стандартный photo_messages ──
+        try:
+            photo = upload.photo_messages(photos=path, peer_id=user_id)[0]
+            if photo and photo.get('id'):
+                return f"photo{photo['owner_id']}_{photo['id']}"
+        except Exception as e:
+            print(f"[upload_photo] photo_messages failed: {e}")
+            traceback.print_exc()
+
+        # ── Способ 2: вручную через messages.getUploadServer ──
+        try:
+            server = vk.photos.getMessagesUploadServer(peer_id=user_id)
+            upload_url = server.get('upload_url')
+            if not upload_url:
+                raise RuntimeError("Нет upload_url")
+
+            boundary = '----VKBotBoundary' + str(int(time.time() * 1000))
+            with open(path, 'rb') as f:
+                file_data = f.read()
+
+            body = (
+                f'--{boundary}\r\n'
+                f'Content-Disposition: form-data; name="photo"; '
+                f'filename="photo.png"\r\n'
+                f'Content-Type: image/png\r\n\r\n'
+            ).encode('utf-8') + file_data + f'\r\n--{boundary}--\r\n'.encode('utf-8')
+
+            req = urllib.request.Request(
+                upload_url, data=body,
+                headers={'Content-Type': f'multipart/form-data; boundary={boundary}'})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                uploaded = json.loads(resp.read().decode('utf-8'))
+
+            photo_data = vk.photos.saveMessagesPhoto(
+                photo=uploaded['photo'],
+                server=uploaded['server'],
+                hash=uploaded['hash'])
+            if photo_data and photo_data[0].get('id'):
+                return f"photo{photo_data[0]['owner_id']}_{photo_data[0]['id']}"
+        except Exception as e:
+            print(f"[upload_photo] fallback failed: {e}")
+            traceback.print_exc()
+
+        raise RuntimeError("Не удалось загрузить фото ни одним способом")
     finally:
         try: os.remove(path)
         except Exception: pass
