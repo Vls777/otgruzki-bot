@@ -890,9 +890,7 @@ def show_stats(user_id, period=None, start=None, end=None):
 # ════════════════════════════ КАРТИНКА ДНЯ (А4 вертикально) ════════════════════════════
 
 def make_day_image_png(d, shipments):
-    """
-    Рисует PNG формата А4 вертикально (210×297 мм) с погрузками на день.
-    """
+    """Рисует PNG формата А4 вертикально (210×297 мм) с погрузками на день."""
     fig = plt.figure(figsize=(8.27, 11.69), dpi=150)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, 1)
@@ -1122,14 +1120,14 @@ def _import_rows(user_id, rows):
 
 def import_1c_data(user_id, rows):
     """
-    Импорт из 1С «Выполнение сборки и отгрузки товаров».
+    Импорт из 1С. Группировка по (клиент, дата):
+      - несколько ордеров одного клиента в один день = ОДНА отгрузка
+      - вес суммируется
+      - разных дней → разные отгрузки
     Вес нетто — колонка H (индекс 7).
     """
     n = len(rows)
-    imported = 0
-    skipped = 0
     errors = []
-    samples = []
     date_re = re.compile(r'от\s+(\d{2}\.\d{2}\.\d{4})')
 
     service_prefixes = (
@@ -1137,22 +1135,12 @@ def import_1c_data(user_id, rows):
         'склад', 'получатель', 'регистратор', 'артикул', 'итого',
     )
 
-    diag_lines = ["🔬 Диагностика файла (первые 10 строк):", ""]
-    shown = 0
-    for r in rows:
-        if not r: continue
-        if all(c is None or str(c).strip() == '' for c in r): continue
-        cells = [str(c) if c is not None else "—" for c in r]
-        cells = [c[:18] for c in cells]
-        diag_lines.append(f"{shown+1}. [{' | '.join(cells)}]")
-        shown += 1
-        if shown >= 10: break
-    diag_lines.append("")
-    diag_lines.append(f"Всего строк в файле: {n}")
-    try:
-        send(user_id, "\n".join(diag_lines))
-    except Exception:
-        traceback.print_exc()
+    print(f"[import-1c] Всего строк: {n}")
+
+    current_client = None
+    # ключ: (client, date_iso) → сумма кг
+    groups = defaultdict(float)
+    order_count = 0
 
     for idx, row in enumerate(rows):
         rn = idx + 1
@@ -1170,89 +1158,86 @@ def import_1c_data(user_id, rows):
                 continue
             a_low = a_str.lower()
 
+            # служебные заголовки
             if any(a_low.startswith(p) for p in service_prefixes):
                 continue
-            if 'расходный ордер' in a_low:
-                continue
+            # акты С/М
             if a_low.startswith('акт с/м'):
                 continue
+            # строки товаров (артикул — число)
             if a_str.replace('.', '').replace(',', '').replace(' ', '').isdigit():
                 continue
 
-            weight_cell = h
-            if weight_cell is None or str(weight_cell).strip() == '':
-                for cell in reversed(r):
-                    if cell is None: continue
-                    s = str(cell).replace(',', '.').replace(' ', '').strip()
-                    if s and re.match(r'^\d+(\.\d+)?$', s):
-                        weight_cell = cell
-                        break
+            # «Расходный ордер ... от ДД.ММ.ГГГГ» = один ордер
+            if 'расходный ордер' in a_low:
+                if current_client is None:
+                    continue
+                m = date_re.search(a_str)
+                if not m:
+                    continue
+                try:
+                    d = datetime.strptime(m.group(1), '%d.%m.%Y').date()
+                except ValueError:
+                    continue
 
-            if weight_cell is None:
-                skipped += 1; continue
-
-            g_str = str(weight_cell).replace(',', '.').replace(' ', '').strip()
-            if not g_str:
-                skipped += 1; continue
-
-            try:
-                weight_kg = float(g_str)
-            except ValueError:
-                skipped += 1; continue
-
-            if weight_kg <= 0:
-                skipped += 1; continue
-
-            weight_t = round(weight_kg / 1000.0, 3)
-
-            shipment_date = None
-            j = idx + 1
-            while j < n:
-                rj = rows[j]
-                if not rj:
-                    j += 1; continue
-                aj = str(rj[0]).strip() if rj[0] is not None else ''
-                aj_low = aj.lower()
-                if 'расходный ордер' in aj_low:
-                    m = date_re.search(aj)
-                    if m:
-                        try:
-                            shipment_date = datetime.strptime(
-                                m.group(1), '%d.%m.%Y').date()
-                        except ValueError:
-                            pass
-                    break
-                if aj and not aj.replace('.', '').replace(',', '').replace(' ', '').isdigit():
-                    if not any(aj_low.startswith(p) for p in service_prefixes):
-                        if 'расходный ордер' not in aj_low and not aj_low.startswith('акт с/м'):
+                weight_cell = h
+                if weight_cell is None or str(weight_cell).strip() == '':
+                    for cell in reversed(r):
+                        if cell is None:
+                            continue
+                        s = str(cell).replace(',', '.').replace(' ', '').strip()
+                        if s and re.match(r'^\d+(\.\d+)?$', s):
+                            weight_cell = cell
                             break
-                j += 1
 
-            if not shipment_date:
-                shipment_date = tz_today()
+                if weight_cell is None:
+                    continue
+                g_str = str(weight_cell).replace(',', '.').replace(' ', '').strip()
+                if not g_str:
+                    continue
+                try:
+                    weight_kg = float(g_str)
+                except ValueError:
+                    continue
+                if weight_kg <= 0:
+                    continue
 
-            add_shipment(a_str, weight_t, shipment_date.isoformat(),
-                         user_id, comment='1С')
+                groups[(current_client, d.isoformat())] += weight_kg
+                order_count += 1
+                continue
 
-            if len(samples) < 15:
-                samples.append(
-                    f"{a_str[:55]} | {shipment_date.isoformat()} | "
-                    f"{weight_kg} кг → {weight_t} т")
-
-            imported += 1
+            # всё остальное — клиент
+            current_client = a_str
 
         except Exception as e:
             errors.append(f"Строка {rn}: {e}")
-            skipped += 1
+
+    # Импорт сгруппированных отгрузок
+    imported = 0
+    samples = []
+    for (client, d_iso), weight_kg in groups.items():
+        weight_t = round(weight_kg / 1000.0, 3)
+        if weight_t <= 0:
+            continue
+        add_shipment(client, weight_t, d_iso, user_id, comment='1С')
+        imported += 1
+        if len(samples) < 15:
+            samples.append(f"{client[:45]} | {d_iso} | "
+                           f"{weight_kg} кг → {weight_t} т")
+
+    print(f"[import-1c] Ордеров: {order_count}, сгруппировано отгрузок: {imported}")
 
     if samples:
         try:
-            send(user_id, "📋 Примеры импортированных:\n" +
-                 "\n".join(f"• {s}" for s in samples))
+            msg = (f"📋 Импорт 1С\n"
+                   f"• Ордеров: {order_count}\n"
+                   f"• Отгрузок (по дням): {imported}\n\n"
+                   f"Примеры:\n" + "\n".join(f"• {s}" for s in samples))
+            send(user_id, msg)
         except Exception:
             traceback.print_exc()
 
-    return imported, skipped, errors
+    return imported, 0, errors
 
 
 def import_csv_data(user_id, data_bytes, filename=''):
