@@ -260,10 +260,14 @@ def stats_for_period(start, end):
     total_t = 0.0
     for s in shipments:
         total_t += s['tonnage']
-        c = by_client.setdefault(s['client_name'], {'tonnage': 0.0})
+        c = by_client.setdefault(s['client_name'],
+                                 {'tonnage': 0.0, 'trucks': 0.0, 'count': 0})
         c['tonnage'] += s['tonnage']
-        d = by_day.setdefault(s['shipment_date'], {'tonnage': 0.0})
+        c['count'] += 1
+        d = by_day.setdefault(s['shipment_date'],
+                              {'tonnage': 0.0, 'trucks': 0.0, 'count': 0})
         d['tonnage'] += s['tonnage']
+        d['count'] += 1
     total_trucks = round(total_t / TRUCK_CAPACITY, 2)
     for c in by_client.values():
         c['trucks'] = round(c['tonnage'] / TRUCK_CAPACITY, 2)
@@ -735,13 +739,16 @@ def format_stats(title, stats):
                  f"({fmt_num(stats['total_tonnage'])} ÷ {fmt_num(TRUCK_CAPACITY)})")
     lines.append("")
     lines.append("👥 По клиентам:")
-    for name, c in sorted(stats['by_client'].items(), key=lambda x: -x[1]['tonnage'])[:30]:
-        lines.append(f"• {name}: {fmt_num(c['tonnage'])} т / {fmt_num(c['trucks'])} фур")
+    for name, c in sorted(stats['by_client'].items(),
+                          key=lambda x: -x[1]['tonnage'])[:30]:
+        lines.append(f"• {name}: {fmt_num(c['tonnage'])} т / "
+                     f"{fmt_num(c['trucks'])} фур / {c['count']} отгр.")
     lines.append("")
     lines.append("📅 По дням:")
     for d in sorted(stats['by_day'].keys(), reverse=True)[:30]:
         c = stats['by_day'][d]
-        lines.append(f"• {ru_date(d)}: {fmt_num(c['tonnage'])} т / {fmt_num(c['trucks'])} фур")
+        lines.append(f"• {ru_date(d)}: {fmt_num(c['tonnage'])} т / "
+                     f"{fmt_num(c['trucks'])} фур / {c['count']} отгр.")
     return "\n".join(lines)
 
 
@@ -885,7 +892,6 @@ def show_stats(user_id, period=None, start=None, end=None):
 def make_day_image_png(d, shipments):
     """
     Рисует PNG формата А4 вертикально (210×297 мм) с погрузками на день.
-    Возвращает bytes PNG.
     """
     fig = plt.figure(figsize=(8.27, 11.69), dpi=150)
     ax = fig.add_axes([0, 0, 1, 1])
@@ -903,19 +909,16 @@ def make_day_image_png(d, shipments):
     COLOR_LIGHT_ROW = '#f0f4f9'
     COLOR_LINE = '#d0d9e4'
 
-    # шапка
     ax.add_patch(Rectangle((0, 0.94), 1, 0.06,
                             facecolor=COLOR_DARK, edgecolor='none'))
     ax.text(0.5, 0.97, 'ВЕЛЕС · Отгрузки склада',
             ha='center', va='center', fontsize=14, color='white',
             fontweight='bold')
 
-    # дата
     ax.text(0.5, 0.905, f'Погрузки на {date_str}',
             ha='center', va='center', fontsize=22, color=COLOR_DARK,
             fontweight='bold')
 
-    # сводка
     summary_y = 0.875
     ax.add_patch(Rectangle((0.05, summary_y - 0.018), 0.9, 0.036,
                             facecolor='#e8eef6', edgecolor='none'))
@@ -1358,10 +1361,7 @@ def upload_csv_doc(user_id, data, filename):
 
 
 def upload_photo_bytes(user_id, photo_bytes):
-    """
-    Загружает фото в ВК. Конвертирует PNG → JPEG (ВК не всегда принимает PNG),
-    затем пробует два способа загрузки.
-    """
+    """Загружает фото в ВК. Конвертирует PNG → JPEG, затем два способа загрузки."""
     fd, path_png = tempfile.mkstemp(suffix='.png')
     os.close(fd)
     path_jpg = path_png.replace('.png', '.jpg')
@@ -1369,7 +1369,6 @@ def upload_photo_bytes(user_id, photo_bytes):
         with open(path_png, 'wb') as f:
             f.write(photo_bytes)
 
-        # Конвертация PNG → JPEG (ВК любит JPEG)
         converted = False
         try:
             from PIL import Image
@@ -1389,7 +1388,6 @@ def upload_photo_bytes(user_id, photo_bytes):
 
         upload = vk_api.VkUpload(vk_session)
 
-        # Способ 1 — стандартный photo_messages
         try:
             photo = upload.photo_messages(photos=upload_path, peer_id=user_id)[0]
             if photo and photo.get('id'):
@@ -1398,7 +1396,6 @@ def upload_photo_bytes(user_id, photo_bytes):
             print(f"[upload_photo] photo_messages failed: {e}")
             traceback.print_exc()
 
-        # Способ 2 — вручную через photos.getMessagesUploadServer
         try:
             server = vk.photos.getMessagesUploadServer(peer_id=user_id)
             upload_url = server.get('upload_url')
