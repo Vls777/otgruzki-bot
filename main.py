@@ -14,6 +14,7 @@ import calendar
 import urllib.request
 import traceback
 import threading
+import requests
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from contextlib import contextmanager
 from datetime import datetime, date, timedelta, timezone
@@ -52,11 +53,9 @@ BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
 
 TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
 
-# Формат A4
 A4_PORTRAIT = (8.27, 11.69)
 A4_LANDSCAPE = (11.69, 8.27)
 
-# Цвета
 COLOR_DARK = '#1a3d63'
 COLOR_ACCENT = '#4a76a8'
 COLOR_LIGHT = '#e8eef6'
@@ -1123,7 +1122,7 @@ def show_day_image(user_id, d):
              main_menu(is_admin(user_id)))
 
 
-# ════════════════════════════ ГРАФИКИ — 9 функций ════════════════════════════
+# ════════════════════════════ ГРАФИКИ ════════════════════════════
 
 def _save_fig_to_png(fig):
     buf = io.BytesIO()
@@ -1134,7 +1133,6 @@ def _save_fig_to_png(fig):
 
 
 def make_chart_by_day_png(start, end, title):
-    """1. Столбики по дням — A4 ландшафт."""
     shipments = get_shipments_by_period(start, end)
     if not shipments: return None
     by_day = defaultdict(float)
@@ -1177,7 +1175,6 @@ def make_chart_by_day_png(start, end, title):
 
 
 def make_top_clients_png(start, end, title):
-    """2. Топ клиентов по тоннажу — горизонтальные бары, A4 портрет."""
     stats = stats_for_period(start, end)
     if not stats['by_client']: return None
     items = sorted(stats['by_client'].items(),
@@ -1212,7 +1209,6 @@ def make_top_clients_png(start, end, title):
 
 
 def make_top_trucks_png(start, end, title):
-    """3. Топ по фурам — горизонтальные бары, A4 портрет."""
     stats = stats_for_period(start, end)
     if not stats['by_client']: return None
     items = sorted(stats['by_client'].items(),
@@ -1246,7 +1242,6 @@ def make_top_trucks_png(start, end, title):
 
 
 def make_pie_clients_png(start, end, title):
-    """4. Доли клиентов — A4 ландшафт."""
     stats = stats_for_period(start, end)
     if not stats['by_client']: return None
     items = sorted(stats['by_client'].items(), key=lambda x: -x[1]['tonnage'])
@@ -1276,7 +1271,6 @@ def make_pie_clients_png(start, end, title):
 
 
 def make_month_heatmap_png(year, month, title):
-    """5. Календарь месяца heatmap — A4 портрет."""
     start = date(year, month, 1)
     last_day = calendar.monthrange(year, month)[1]
     end = date(year, month, last_day)
@@ -1334,7 +1328,6 @@ def make_month_heatmap_png(year, month, title):
 
 
 def make_week_compare_png():
-    """6. Сравнение недель — A4 ландшафт."""
     cmp = week_comparison()
     this_by_day = {d: c['tonnage'] for d, c in cmp['this']['by_day'].items()}
     last_by_day = {d: c['tonnage'] for d, c in cmp['last']['by_day'].items()}
@@ -1389,7 +1382,6 @@ def make_week_compare_png():
 
 
 def make_client_trend_png(client_name):
-    """7. Тренд клиента — A4 ландшафт."""
     shipments = get_shipments_by_client(client_name, limit=5000)
     if not shipments: return None
     by_date = defaultdict(float)
@@ -1422,7 +1414,6 @@ def make_client_trend_png(client_name):
 
 
 def make_weekday_avg_png(start, end, title):
-    """8. Распределение по дням недели — A4 ландшафт."""
     stats = stats_for_period(start, end)
     if not stats['by_day']: return None
     totals = [0.0] * 7
@@ -1460,7 +1451,6 @@ def make_weekday_avg_png(start, end, title):
 
 
 def make_weekend_pie_png(start, end, title):
-    """9. Будни vs выходные — A4 ландшафт."""
     stats = stats_for_period(start, end)
     if not stats['by_day']: return None
     weekday_t = 0.0
@@ -1533,25 +1523,19 @@ def show_chart(user_id, chart, period):
 
     if chart == 'by_day':
         png = make_chart_by_day_png(s, e, ptitle)
-        caption = _chart_caption(chart, ptitle)
     elif chart == 'top_clients':
         png = make_top_clients_png(s, e, ptitle)
-        caption = _chart_caption(chart, ptitle)
     elif chart == 'top_trucks':
         png = make_top_trucks_png(s, e, ptitle)
-        caption = _chart_caption(chart, ptitle)
     elif chart == 'pie_clients':
         png = make_pie_clients_png(s, e, ptitle)
-        caption = _chart_caption(chart, ptitle)
     elif chart == 'weekday_avg':
         png = make_weekday_avg_png(s, e, ptitle)
-        caption = _chart_caption(chart, ptitle)
     elif chart == 'weekend_pie':
         png = make_weekend_pie_png(s, e, ptitle)
-        caption = _chart_caption(chart, ptitle)
     else:
         send(user_id, "Неизвестный график.", main_menu(is_admin(user_id))); return
-    _send_chart(user_id, png, caption)
+    _send_chart(user_id, png, _chart_caption(chart, ptitle))
 
 
 def show_chart_custom(user_id, chart, start_iso, end_iso):
@@ -1638,27 +1622,6 @@ def import_from_text(user_id, text):
     return imported, skipped, errors
 
 
-def import_csv_data(user_id, data_bytes, filename=''):
-    name = (filename or '').lower()
-    if name.endswith('.xlsx') or name.endswith('.xlsm'):
-        try:
-            from openpyxl import load_workbook
-        except ImportError:
-            return 0, 0, ["Библиотека openpyxl не установлена"]
-        try:
-            wb = load_workbook(io.BytesIO(data_bytes), data_only=True)
-            ws = wb.active
-            rows = [list(r) for r in ws.iter_rows(values_only=True)]
-        except Exception as e:
-            return 0, 0, [f"Не удалось прочитать Excel: {e}"]
-        # Пробуем распознать 1С-структуру
-        for r in rows[:300]:
-            if r and r[0] and 'расходный ордер' in str(r[0]).lower():
-                return import_1c_data(user_id, rows)
-        return _import_simple_rows(user_id, rows)
-    return 0, 0, ["Неподдерживаемый формат файла"]
-
-
 def _import_simple_rows(user_id, rows):
     if not rows or len(rows) < 2:
         return 0, 0, ["Нужна хотя бы одна строка данных"]
@@ -1709,11 +1672,6 @@ def _import_simple_rows(user_id, rows):
 
 
 def import_1c_data(user_id, rows):
-    """
-    Импорт 1С «Выполнение сборки и отгрузки».
-    Одна строка клиента = одна отгрузка с итоговым весом.
-    Вес нетто — колонка H (индекс 7).
-    """
     n = len(rows)
     imported = skipped = 0
     errors = []
@@ -1801,6 +1759,26 @@ def import_1c_data(user_id, rows):
     return imported, skipped, errors
 
 
+def import_csv_data(user_id, data_bytes, filename=''):
+    name = (filename or '').lower()
+    if name.endswith('.xlsx') or name.endswith('.xlsm'):
+        try:
+            from openpyxl import load_workbook
+        except ImportError:
+            return 0, 0, ["Библиотека openpyxl не установлена"]
+        try:
+            wb = load_workbook(io.BytesIO(data_bytes), data_only=True)
+            ws = wb.active
+            rows = [list(r) for r in ws.iter_rows(values_only=True)]
+        except Exception as e:
+            return 0, 0, [f"Не удалось прочитать Excel: {e}"]
+        for r in rows[:300]:
+            if r and r[0] and 'расходный ордер' in str(r[0]).lower():
+                return import_1c_data(user_id, rows)
+        return _import_simple_rows(user_id, rows)
+    return 0, 0, ["Неподдерживаемый формат файла"]
+
+
 def handle_csv_attachment(user_id, attachments):
     try: make_backup('before-import')
     except Exception: traceback.print_exc()
@@ -1834,83 +1812,89 @@ def handle_csv_attachment(user_id, attachments):
     clear_state(user_id)
 
 
-# ════════════════════════════ ЭКСПОРТ / ЗАГРУЗКА ФАЙЛОВ ════════════════════════════
+# ════════════════════════════ ЗАГРУЗКА ФАЙЛОВ В ВК (НОВАЯ ВЕРСИЯ) ════════════════════════════
 
 def upload_csv_doc(user_id, data, filename):
-    fd, path = tempfile.mkstemp(suffix='.csv')
-    os.close(fd)
+    """Загружает документ в ВК через прямой API."""
     try:
-        with open(path, 'wb') as f: f.write(data)
-        upload = vk_api.VkUpload(vk_session)
-        resp = upload.document(path, filename, peer_id=user_id)
-        doc = resp.get('doc') if isinstance(resp, dict) else None
-        if not doc: raise RuntimeError(f"Некорректный ответ: {resp}")
-        return f"doc{doc['owner_id']}_{doc['id']}"
-    finally:
-        try: os.remove(path)
-        except Exception: pass
+        server_resp = vk.docs.getMessagesUploadServer(type='doc', peer_id=user_id)
+        upload_url = server_resp['upload_url']
+    except Exception as e:
+        print(f"[upload_doc] getMessagesUploadServer failed: {e}")
+        traceback.print_exc()
+        raise
+
+    files = {'file': (filename, data, 'application/octet-stream')}
+    r = requests.post(upload_url, files=files, timeout=120)
+    uploaded = r.json()
+    print(f"[upload_doc] uploaded: {str(uploaded)[:200]}")
+
+    if not uploaded.get('file'):
+        raise RuntimeError(f"VK upload failed: {uploaded}")
+
+    saved = vk.docs.save(file=uploaded['file'], title=filename)
+    print(f"[upload_doc] saved: {str(saved)[:200]}")
+
+    if isinstance(saved, dict) and 'doc' in saved:
+        doc_info = saved['doc']
+    elif isinstance(saved, dict) and saved.get('id'):
+        doc_info = saved
+    else:
+        raise RuntimeError(f"docs.save unexpected: {saved}")
+
+    return f"doc{doc_info['owner_id']}_{doc_info['id']}"
 
 
 def upload_photo_bytes(user_id, photo_bytes):
-    """Конвертирует PNG в JPEG и загружает в ВК."""
-    fd, path_png = tempfile.mkstemp(suffix='.png')
-    os.close(fd)
-    path_jpg = path_png.replace('.png', '.jpg')
+    """Загружает фото в ВК через прямой API. Конвертирует в JPEG."""
+    # 1. Конвертация в JPEG с уменьшением
     try:
-        with open(path_png, 'wb') as f: f.write(photo_bytes)
-        converted = False
-        try:
-            from PIL import Image
-            img = Image.open(path_png).convert('RGB')
-            img.save(path_jpg, 'JPEG', quality=90)
-            converted = True
-        except Exception as e:
-            print(f"[upload_photo] PIL failed: {e}")
-            traceback.print_exc()
-            try:
-                shutil.copy2(path_png, path_jpg); converted = True
-            except Exception: traceback.print_exc()
-        upload_path = path_jpg if converted else path_png
-        upload = vk_api.VkUpload(vk_session)
-        try:
-            photo = upload.photo_messages(photos=upload_path, peer_id=user_id)[0]
-            if photo and photo.get('id'):
-                return f"photo{photo['owner_id']}_{photo['id']}"
-        except Exception as e:
-            print(f"[upload_photo] photo_messages failed: {e}")
-            traceback.print_exc()
-        # fallback
-        try:
-            server = vk.photos.getMessagesUploadServer(peer_id=user_id)
-            upload_url = server.get('upload_url')
-            if not upload_url: raise RuntimeError("Нет upload_url")
-            boundary = '----VKBotBoundary' + str(int(time.time() * 1000))
-            with open(upload_path, 'rb') as f: file_data = f.read()
-            ext = 'jpg' if converted else 'png'
-            ctype = 'image/jpeg' if converted else 'image/png'
-            body = (f'--{boundary}\r\n'
-                    f'Content-Disposition: form-data; name="photo"; '
-                    f'filename="photo.{ext}"\r\n'
-                    f'Content-Type: {ctype}\r\n\r\n').encode('utf-8') + \
-                   file_data + f'\r\n--{boundary}--\r\n'.encode('utf-8')
-            req = urllib.request.Request(
-                upload_url, data=body,
-                headers={'Content-Type': f'multipart/form-data; boundary={boundary}'})
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                uploaded = json.loads(resp.read().decode('utf-8'))
-            photo_data = vk.photos.saveMessagesPhoto(
-                photo=uploaded['photo'], server=uploaded['server'],
-                hash=uploaded['hash'])
-            if photo_data and photo_data[0].get('id'):
-                return f"photo{photo_data[0]['owner_id']}_{photo_data[0]['id']}"
-        except Exception as e:
-            print(f"[upload_photo] fallback failed: {e}")
-            traceback.print_exc()
-        raise RuntimeError("Не удалось загрузить фото ни одним способом")
-    finally:
-        for p in (path_png, path_jpg):
-            try: os.remove(p)
-            except Exception: pass
+        from PIL import Image
+        img = Image.open(io.BytesIO(photo_bytes))
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        max_dim = 1400
+        if max(img.size) > max_dim:
+            img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        jpg_buf = io.BytesIO()
+        img.save(jpg_buf, 'JPEG', quality=85, optimize=True)
+        jpg_bytes = jpg_buf.getvalue()
+        print(f"[upload_photo] JPEG: {img.size}, {len(jpg_bytes)} bytes")
+    except Exception as e:
+        print(f"[upload_photo] PIL failed: {e}")
+        traceback.print_exc()
+        jpg_bytes = photo_bytes
+
+    # 2. Сервер загрузки
+    try:
+        server_resp = vk.photos.getMessagesUploadServer(peer_id=user_id)
+        upload_url = server_resp['upload_url']
+        print(f"[upload_photo] got upload_url")
+    except Exception as e:
+        print(f"[upload_photo] getMessagesUploadServer failed: {e}")
+        traceback.print_exc()
+        raise
+
+    # 3. Загрузка через requests
+    files = {'photo': ('image.jpg', jpg_bytes, 'image/jpeg')}
+    r = requests.post(upload_url, files=files, timeout=60)
+    uploaded = r.json()
+    print(f"[upload_photo] uploaded: {str(uploaded)[:200]}")
+
+    if not uploaded.get('photo'):
+        raise RuntimeError(f"VK photo upload returned empty: {uploaded}")
+
+    # 4. Сохранить
+    photo_list = vk.photos.saveMessagesPhoto(
+        photo=uploaded['photo'],
+        server=uploaded['server'],
+        hash=uploaded['hash'])
+    print(f"[upload_photo] saveMessagesPhoto: {str(photo_list)[:200]}")
+
+    if not photo_list or not photo_list[0].get('id'):
+        raise RuntimeError(f"saveMessagesPhoto returned empty: {photo_list}")
+
+    return f"photo{photo_list[0]['owner_id']}_{photo_list[0]['id']}"
 
 
 def on_export_csv(user_id, days=30):
