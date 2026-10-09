@@ -10,6 +10,7 @@ import sqlite3
 import tempfile
 import os
 import re
+import calendar
 import urllib.request
 import traceback
 import threading
@@ -50,6 +51,16 @@ DB_PATH = os.path.join(DATA_DIR, 'shipments.db')
 BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
 
 TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
+
+# Формат A4
+A4_PORTRAIT = (8.27, 11.69)
+A4_LANDSCAPE = (11.69, 8.27)
+
+# Цвета
+COLOR_DARK = '#1a3d63'
+COLOR_ACCENT = '#4a76a8'
+COLOR_LIGHT = '#e8eef6'
+COLOR_GRID = '#d0d9e4'
 
 
 def tz_now(): return datetime.now(TZ)
@@ -363,13 +374,107 @@ def main_menu(is_admin=False, morning_on=True):
     kb.add_button('📅 Другая дата', color=VkKeyboardColor.SECONDARY)
     kb.add_line()
     kb.add_button('📊 Статистика', color=VkKeyboardColor.SECONDARY)
-    kb.add_button('📁 Клиенты', color=VkKeyboardColor.SECONDARY)
+    kb.add_button('📈 Графики', color=VkKeyboardColor.POSITIVE)
     kb.add_line()
+    kb.add_button('📁 Клиенты', color=VkKeyboardColor.SECONDARY)
     kb.add_button('❓ Помощь', color=VkKeyboardColor.SECONDARY)
+    kb.add_line()
     label = '🔔 Сводка: вкл' if morning_on else '🔕 Сводка: выкл'
     kb.add_button(label, color=VkKeyboardColor.SECONDARY)
     if is_admin:
         kb.add_button('⚙️ Настройки', color=VkKeyboardColor.SECONDARY)
+    return kb.get_keyboard()
+
+
+def charts_menu():
+    kb = VkKeyboard(inline=True)
+    kb.add_button('📊 По дням', color=VkKeyboardColor.PRIMARY,
+                  payload=_p(cmd='chart_pick', chart='by_day'))
+    kb.add_button('🥇 Топ клиентов', color=VkKeyboardColor.POSITIVE,
+                  payload=_p(cmd='chart_pick', chart='top_clients'))
+    kb.add_line()
+    kb.add_button('🍰 Доли клиентов', color=VkKeyboardColor.SECONDARY,
+                  payload=_p(cmd='chart_pick', chart='pie_clients'))
+    kb.add_button('🚛 Топ по фурам', color=VkKeyboardColor.POSITIVE,
+                  payload=_p(cmd='chart_pick', chart='top_trucks'))
+    kb.add_line()
+    kb.add_button('📅 Календарь месяца', color=VkKeyboardColor.PRIMARY,
+                  payload=_p(cmd='chart_pick', chart='calendar'))
+    kb.add_button('📈 Сравнение недель', color=VkKeyboardColor.SECONDARY,
+                  payload=_p(cmd='chart_pick', chart='week_compare'))
+    kb.add_line()
+    kb.add_button('📈 Тренд клиента', color=VkKeyboardColor.PRIMARY,
+                  payload=_p(cmd='chart_pick', chart='client_trend'))
+    kb.add_button('📊 Дни недели', color=VkKeyboardColor.SECONDARY,
+                  payload=_p(cmd='chart_pick', chart='weekday_avg'))
+    kb.add_line()
+    kb.add_button('🥧 Будни/выходные', color=VkKeyboardColor.SECONDARY,
+                  payload=_p(cmd='chart_pick', chart='weekend_pie'))
+    kb.add_line()
+    kb.add_button('🏠 В меню', color=VkKeyboardColor.SECONDARY,
+                  payload=_p(cmd='to_menu'))
+    return kb.get_keyboard()
+
+
+def chart_period_menu(chart):
+    kb = VkKeyboard(inline=True)
+    kb.add_button('Неделя', color=VkKeyboardColor.PRIMARY,
+                  payload=_p(cmd='chart_draw', chart=chart, period='week'))
+    kb.add_button('Месяц', color=VkKeyboardColor.PRIMARY,
+                  payload=_p(cmd='chart_draw', chart=chart, period='month'))
+    kb.add_line()
+    kb.add_button('Год', color=VkKeyboardColor.SECONDARY,
+                  payload=_p(cmd='chart_draw', chart=chart, period='year'))
+    kb.add_button('📅 Произвольно', color=VkKeyboardColor.SECONDARY,
+                  payload=_p(cmd='chart_draw_custom', chart=chart))
+    kb.add_line()
+    kb.add_button('⬅️ К графикам', color=VkKeyboardColor.SECONDARY,
+                  payload=_p(cmd='charts_menu'))
+    kb.add_button('🏠 В меню', color=VkKeyboardColor.SECONDARY,
+                  payload=_p(cmd='to_menu'))
+    return kb.get_keyboard()
+
+
+def chart_calendar_menu():
+    kb = VkKeyboard(inline=True)
+    kb.add_button('Этот месяц', color=VkKeyboardColor.PRIMARY,
+                  payload=_p(cmd='chart_calendar_month', month='this'))
+    kb.add_button('Прошлый месяц', color=VkKeyboardColor.SECONDARY,
+                  payload=_p(cmd='chart_calendar_month', month='last'))
+    kb.add_line()
+    kb.add_button('📅 Другой месяц', color=VkKeyboardColor.POSITIVE,
+                  payload=_p(cmd='chart_calendar_month', month='custom'))
+    kb.add_line()
+    kb.add_button('⬅️ К графикам', color=VkKeyboardColor.SECONDARY,
+                  payload=_p(cmd='charts_menu'))
+    kb.add_button('🏠 В меню', color=VkKeyboardColor.SECONDARY,
+                  payload=_p(cmd='to_menu'))
+    return kb.get_keyboard()
+
+
+def clients_menu_chart(clients, page=0, per_page=6):
+    kb = VkKeyboard(inline=True)
+    start = page * per_page
+    chunk = clients[start:start + per_page]
+    for i, c in enumerate(chunk):
+        kb.add_button(c['name'][:40], color=VkKeyboardColor.SECONDARY,
+                      payload=_p(cmd='chart_client_pick', cid=c['id']))
+        if i % 2 == 1 and i != len(chunk) - 1:
+            kb.add_line()
+    nav = []
+    if page > 0:
+        nav.append(('⬅️', _p(cmd='chart_clients_page', page=page - 1)))
+    if start + per_page < len(clients):
+        nav.append(('➡️', _p(cmd='chart_clients_page', page=page + 1)))
+    if nav:
+        kb.add_line()
+        for label, pl in nav:
+            kb.add_button(label, color=VkKeyboardColor.SECONDARY, payload=pl)
+    kb.add_line()
+    kb.add_button('⬅️ К графикам', color=VkKeyboardColor.SECONDARY,
+                  payload=_p(cmd='charts_menu'))
+    kb.add_button('🏠 В меню', color=VkKeyboardColor.SECONDARY,
+                  payload=_p(cmd='to_menu'))
     return kb.get_keyboard()
 
 
@@ -485,7 +590,7 @@ def stats_menu():
     kb.add_button('Этот месяц', color=VkKeyboardColor.SECONDARY, payload=_p(cmd='stats', period='month'))
     kb.add_line()
     kb.add_button('Этот год', color=VkKeyboardColor.SECONDARY, payload=_p(cmd='stats', period='year'))
-    kb.add_button('📊 График', color=VkKeyboardColor.POSITIVE, payload=_p(cmd='chart', period='week'))
+    kb.add_button('📅 Произвольно', color=VkKeyboardColor.SECONDARY, payload=_p(cmd='stats', period='custom'))
     kb.add_line()
     kb.add_button('🏠 В меню', color=VkKeyboardColor.SECONDARY, payload=_p(cmd='to_menu'))
     kb.add_button('❌ Отмена', color=VkKeyboardColor.NEGATIVE, payload=_p(cmd='cancel'))
@@ -766,8 +871,8 @@ def show_help(user_id):
         "• ➕ Добавлять погрузки\n"
         "• 📋 Показывать погрузки на день\n"
         "• 🖼 Картинка дня — сводка в формате А4\n"
-        "• ✏️ Изменять и удалять отгрузки\n"
         "• 📊 Статистика за любой период\n"
+        "• 📈 Графики — 9 видов визуализации (А4)\n"
         "• 📁 Справочник клиентов\n"
         "• 🔔 Утренняя сводка\n"
         "• 📥 Импорт Excel из 1С\n"
@@ -887,58 +992,61 @@ def show_stats(user_id, period=None, start=None, end=None):
     send(user_id, format_stats(title, stats), main_menu(is_admin(user_id)))
 
 
-# ════════════════════════════ КАРТИНКА ДНЯ (А4 вертикально) ════════════════════════════
+def _chart_period_bounds(period):
+    today = tz_today()
+    if period == 'week':
+        s = today - timedelta(days=today.weekday()); e = today
+        return s, e, f"эта неделя ({ru_date(s)}–{ru_date(e)})"
+    if period == 'month':
+        s = today.replace(day=1); e = today
+        return s, e, f"этот месяц ({ru_date(s)}–{ru_date(e)})"
+    if period == 'last_month':
+        first = today.replace(day=1); e = first - timedelta(days=1)
+        s = e.replace(day=1)
+        return s, e, f"прошлый месяц ({ru_date(s)}–{ru_date(e)})"
+    if period == 'year':
+        s = today.replace(month=1, day=1); e = today
+        return s, e, f"этот год ({ru_date(s)}–{ru_date(e)})"
+    return None, None, None
+
+
+# ════════════════════════════ КАРТИНКА ДНЯ (А4) ════════════════════════════
 
 def make_day_image_png(d, shipments):
-    """Рисует PNG формата А4 вертикально (210×297 мм) с погрузками на день."""
-    fig = plt.figure(figsize=(8.27, 11.69), dpi=150)
+    fig = plt.figure(figsize=A4_PORTRAIT, dpi=150)
     ax = fig.add_axes([0, 0, 1, 1])
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.axis('off')
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis('off')
 
     date_str = ru_date(d)
     total_t = sum(s['tonnage'] for s in shipments)
     total_trucks = round(total_t / TRUCK_CAPACITY, 2)
     cnt = len(shipments)
 
-    COLOR_DARK = '#1a3d63'
-    COLOR_ACCENT = '#4a76a8'
-    COLOR_LIGHT_ROW = '#f0f4f9'
-    COLOR_LINE = '#d0d9e4'
-
-    ax.add_patch(Rectangle((0, 0.94), 1, 0.06,
-                            facecolor=COLOR_DARK, edgecolor='none'))
+    ax.add_patch(Rectangle((0, 0.94), 1, 0.06, facecolor=COLOR_DARK, edgecolor='none'))
     ax.text(0.5, 0.97, 'ВЕЛЕС · Отгрузки склада',
-            ha='center', va='center', fontsize=14, color='white',
-            fontweight='bold')
+            ha='center', va='center', fontsize=14, color='white', fontweight='bold')
 
     ax.text(0.5, 0.905, f'Погрузки на {date_str}',
-            ha='center', va='center', fontsize=22, color=COLOR_DARK,
-            fontweight='bold')
+            ha='center', va='center', fontsize=22, color=COLOR_DARK, fontweight='bold')
 
     summary_y = 0.875
     ax.add_patch(Rectangle((0.05, summary_y - 0.018), 0.9, 0.036,
-                            facecolor='#e8eef6', edgecolor='none'))
+                            facecolor=COLOR_LIGHT, edgecolor='none'))
     ax.text(0.5, summary_y,
             f'Всего: {fmt_num(total_t)} т    ·    {fmt_num(total_trucks)} фур    ·    {cnt} отгрузок',
-            ha='center', va='center', fontsize=12, color=COLOR_ACCENT,
-            fontweight='bold')
+            ha='center', va='center', fontsize=12, color=COLOR_ACCENT, fontweight='bold')
 
     if not shipments:
         ax.text(0.5, 0.5, '— нет погрузок —',
                 ha='center', va='center', fontsize=24, color='#aaa')
         buf = io.BytesIO()
         plt.savefig(buf, format='png', dpi=150, facecolor='white')
-        plt.close(fig)
-        buf.seek(0)
+        plt.close(fig); buf.seek(0)
         return buf.read()
 
-    area_top = 0.845
-    area_bottom = 0.105
+    area_top = 0.845; area_bottom = 0.105
     area_h = area_top - area_bottom
-    pad_left = 0.05
-    pad_right = 0.05
+    pad_left = 0.05; pad_right = 0.05
     content_w = 1 - pad_left - pad_right
     right_edge = 1 - pad_right
 
@@ -955,24 +1063,19 @@ def make_day_image_png(d, shipments):
         y_center = (row_top + row_bottom) / 2
 
         if i % 2 == 0:
-            ax.add_patch(Rectangle((pad_left, row_bottom),
-                                    content_w, row_h,
-                                    facecolor=COLOR_LIGHT_ROW,
-                                    edgecolor='none'))
+            ax.add_patch(Rectangle((pad_left, row_bottom), content_w, row_h,
+                                    facecolor='#f0f4f9', edgecolor='none'))
         ax.plot([pad_left, right_edge], [row_bottom, row_bottom],
-                color=COLOR_LINE, linewidth=0.8)
+                color=COLOR_GRID, linewidth=0.8)
 
         ax.text(pad_left + 0.005, y_center, f'{i+1}.',
-                ha='left', va='center', fontsize=font_main,
-                color='#9aa7b5')
+                ha='left', va='center', fontsize=font_main, color='#9aa7b5')
 
         name = s['client_name']
         max_chars = 44
-        if len(name) > max_chars:
-            name = name[:max_chars - 1] + '…'
+        if len(name) > max_chars: name = name[:max_chars - 1] + '…'
         ax.text(pad_left + 0.04, y_center, name,
-                ha='left', va='center', fontsize=font_main,
-                color=COLOR_DARK)
+                ha='left', va='center', fontsize=font_main, color=COLOR_DARK)
 
         w_str = f"{fmt_num(s['tonnage'])} т · {fmt_num(s['trucks'])} фур"
         ax.text(right_edge - 0.005, y_center, w_str,
@@ -981,31 +1084,25 @@ def make_day_image_png(d, shipments):
 
         if s.get('comment') and row_h > 0.035:
             cmt = s['comment']
-            if len(cmt) > 60:
-                cmt = cmt[:59] + '…'
-            ax.text(pad_left + 0.04, row_bottom + row_h * 0.22,
-                    f'— {cmt}',
+            if len(cmt) > 60: cmt = cmt[:59] + '…'
+            ax.text(pad_left + 0.04, row_bottom + row_h * 0.22, f'— {cmt}',
                     ha='left', va='center', fontsize=font_cmt,
                     color='#8b96a4', style='italic')
 
         y_cursor = row_bottom
 
-    ax.add_patch(Rectangle((0, 0.03), 1, 0.06,
-                            facecolor=COLOR_ACCENT, edgecolor='none'))
+    ax.add_patch(Rectangle((0, 0.03), 1, 0.06, facecolor=COLOR_ACCENT, edgecolor='none'))
     ax.text(0.5, 0.06,
             f'ИТОГО:  {fmt_num(total_t)} т   ·   {fmt_num(total_trucks)} фур   ·   {cnt} отгрузок',
-            ha='center', va='center', fontsize=15, color='white',
-            fontweight='bold')
+            ha='center', va='center', fontsize=15, color='white', fontweight='bold')
 
-    ax.text(0.5, 0.012,
-            f'Сформировано ботом · {tz_now().strftime("%d.%m.%Y %H:%M")}',
+    ax.text(0.5, 0.012, f'Сформировано ботом · {tz_now().strftime("%d.%m.%Y %H:%M")}',
             ha='center', va='center', fontsize=8, color='#b0b8c2')
 
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=150, facecolor='white',
                 bbox_inches=None, pad_inches=0)
-    plt.close(fig)
-    buf.seek(0)
+    plt.close(fig); buf.seek(0)
     return buf.read()
 
 
@@ -1024,6 +1121,478 @@ def show_day_image(user_id, d):
         traceback.print_exc()
         send(user_id, f"❌ Не удалось отправить картинку: {e}",
              main_menu(is_admin(user_id)))
+
+
+# ════════════════════════════ ГРАФИКИ — 9 функций ════════════════════════════
+
+def _save_fig_to_png(fig):
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=130, facecolor='white', bbox_inches=None)
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
+def make_chart_by_day_png(start, end, title):
+    """1. Столбики по дням — A4 ландшафт."""
+    shipments = get_shipments_by_period(start, end)
+    if not shipments: return None
+    by_day = defaultdict(float)
+    d = start
+    while d <= end:
+        by_day[d] = 0.0; d += timedelta(days=1)
+    for s in shipments:
+        day = datetime.strptime(s['shipment_date'], '%Y-%m-%d').date()
+        by_day[day] += s['tonnage']
+    dates = sorted(by_day.keys())
+    values = [by_day[d] for d in dates]
+
+    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=130)
+    ax = fig.add_axes([0.08, 0.15, 0.86, 0.72])
+
+    bars = ax.bar(dates, values, color=COLOR_ACCENT, edgecolor='#2c4a70', width=0.7)
+    ax.set_title(f'Отгрузки — {title}', fontsize=16, fontweight='bold',
+                 color=COLOR_DARK, pad=15)
+    ax.set_ylabel('Тонны', fontsize=12)
+    ax.grid(axis='y', linestyle='--', alpha=0.5)
+    ax.set_axisbelow(True)
+
+    for bar, v in zip(bars, values):
+        if v > 0:
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
+                    f'{fmt_num(v)}', ha='center', va='bottom', fontsize=9)
+
+    if len(dates) > 10:
+        ax.xaxis.set_major_formatter(DateFormatter('%d.%m'))
+        plt.setp(ax.get_xticklabels(), rotation=60, ha='right')
+    else:
+        ax.set_xticks(dates)
+        ax.set_xticklabels([d.strftime('%d.%m') for d in dates])
+
+    total = sum(values)
+    fig.text(0.5, 0.04,
+             f'Итого: {fmt_num(total)} т  ·  {fmt_num(round(total / TRUCK_CAPACITY, 2))} фур',
+             ha='center', fontsize=12, color=COLOR_ACCENT, fontweight='bold')
+    return _save_fig_to_png(fig)
+
+
+def make_top_clients_png(start, end, title):
+    """2. Топ клиентов по тоннажу — горизонтальные бары, A4 портрет."""
+    stats = stats_for_period(start, end)
+    if not stats['by_client']: return None
+    items = sorted(stats['by_client'].items(),
+                   key=lambda x: -x[1]['tonnage'])[:15]
+    items = items[::-1]
+    names = [n[:34] for n, _ in items]
+    values = [c['tonnage'] for _, c in items]
+    trucks = [c['trucks'] for _, c in items]
+
+    fig = plt.figure(figsize=A4_PORTRAIT, dpi=130)
+    ax = fig.add_axes([0.28, 0.08, 0.65, 0.83])
+
+    bars = ax.barh(names, values, color=COLOR_ACCENT, edgecolor='#2c4a70')
+    for bar, v, tr in zip(bars, values, trucks):
+        ax.text(bar.get_width() * 1.01,
+                bar.get_y() + bar.get_height() / 2,
+                f'{fmt_num(v)} т · {fmt_num(tr)} фур',
+                va='center', fontsize=9, color=COLOR_DARK)
+
+    ax.set_xlabel('Тонны', fontsize=12)
+    ax.set_title(f'🥇 Топ клиентов — {title}',
+                 fontsize=15, fontweight='bold', color=COLOR_DARK, pad=15)
+    ax.grid(axis='x', linestyle='--', alpha=0.4)
+    ax.set_axisbelow(True)
+
+    total = sum(values)
+    fig.text(0.5, 0.025,
+             f'Итого (топ-{len(items)}): {fmt_num(total)} т  ·  '
+             f'{fmt_num(round(total / TRUCK_CAPACITY, 2))} фур',
+             ha='center', fontsize=11, color=COLOR_ACCENT, fontweight='bold')
+    return _save_fig_to_png(fig)
+
+
+def make_top_trucks_png(start, end, title):
+    """3. Топ по фурам — горизонтальные бары, A4 портрет."""
+    stats = stats_for_period(start, end)
+    if not stats['by_client']: return None
+    items = sorted(stats['by_client'].items(),
+                   key=lambda x: -x[1]['trucks'])[:15]
+    items = items[::-1]
+    names = [n[:34] for n, _ in items]
+    trucks = [c['trucks'] for _, c in items]
+    tons = [c['tonnage'] for _, c in items]
+
+    fig = plt.figure(figsize=A4_PORTRAIT, dpi=130)
+    ax = fig.add_axes([0.28, 0.08, 0.65, 0.83])
+
+    bars = ax.barh(names, trucks, color='#7a9cc6', edgecolor='#2c4a70')
+    for bar, tr, v in zip(bars, trucks, tons):
+        ax.text(bar.get_width() * 1.01,
+                bar.get_y() + bar.get_height() / 2,
+                f'{fmt_num(tr)} фур · {fmt_num(v)} т',
+                va='center', fontsize=9, color=COLOR_DARK)
+
+    ax.set_xlabel('Фуры (расчёт: тоннаж ÷ 19)', fontsize=11)
+    ax.set_title(f'🚛 Топ по фурам — {title}',
+                 fontsize=15, fontweight='bold', color=COLOR_DARK, pad=15)
+    ax.grid(axis='x', linestyle='--', alpha=0.4)
+    ax.set_axisbelow(True)
+
+    total = sum(trucks)
+    fig.text(0.5, 0.025,
+             f'Всего (топ-{len(items)}): {fmt_num(round(total, 2))} фур',
+             ha='center', fontsize=11, color=COLOR_ACCENT, fontweight='bold')
+    return _save_fig_to_png(fig)
+
+
+def make_pie_clients_png(start, end, title):
+    """4. Доли клиентов — A4 ландшафт."""
+    stats = stats_for_period(start, end)
+    if not stats['by_client']: return None
+    items = sorted(stats['by_client'].items(), key=lambda x: -x[1]['tonnage'])
+    top = items[:8]
+    other_t = sum(c['tonnage'] for _, c in items[8:])
+    labels = [n[:24] for n, _ in top]
+    values = [c['tonnage'] for _, c in top]
+    if other_t > 0:
+        labels.append('Прочие')
+        values.append(other_t)
+
+    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=130)
+    ax = fig.add_axes([0.05, 0.08, 0.9, 0.82])
+
+    colors = plt.cm.tab10.colors[:len(values)]
+    wedges, texts, autotexts = ax.pie(
+        values, labels=labels, autopct='%1.1f%%',
+        colors=colors, startangle=90, textprops={'fontsize': 10})
+    for a in autotexts:
+        a.set_color('white'); a.set_fontweight('bold')
+
+    total = sum(values)
+    ax.set_title(f'🍰 Доли клиентов — {title}\n'
+                 f'Всего: {fmt_num(total)} т / {fmt_num(round(total / TRUCK_CAPACITY, 2))} фур',
+                 fontsize=14, fontweight='bold', color=COLOR_DARK, pad=15)
+    return _save_fig_to_png(fig)
+
+
+def make_month_heatmap_png(year, month, title):
+    """5. Календарь месяца heatmap — A4 портрет."""
+    start = date(year, month, 1)
+    last_day = calendar.monthrange(year, month)[1]
+    end = date(year, month, last_day)
+    stats = stats_for_period(start, end)
+    by_day = {int(d.split('-')[2]): c['tonnage']
+              for d, c in stats['by_day'].items()}
+
+    cal = calendar.Calendar(firstweekday=0)
+    weeks = cal.monthdayscalendar(year, month)
+    max_t = max(by_day.values()) if by_day else 1.0
+    n_weeks = len(weeks)
+
+    fig = plt.figure(figsize=A4_PORTRAIT, dpi=130)
+    ax = fig.add_axes([0.08, 0.14, 0.84, 0.72])
+
+    days_header = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+    for i, h in enumerate(days_header):
+        ax.text(i + 0.5, n_weeks + 0.35, h, ha='center',
+                fontsize=12, fontweight='bold', color=COLOR_DARK)
+
+    cmap = plt.cm.Blues
+    for w, week in enumerate(weeks):
+        for d_idx, day in enumerate(week):
+            y = n_weeks - 1 - w
+            if day == 0:
+                ax.add_patch(Rectangle((d_idx, y), 1, 1,
+                                       facecolor='#f5f5f5', edgecolor='#ddd'))
+                continue
+            t = by_day.get(day, 0.0)
+            ratio = (t / max_t) if max_t > 0 else 0
+            color = cmap(0.15 + 0.75 * ratio) if t > 0 else '#fafafa'
+            ax.add_patch(Rectangle((d_idx, y), 1, 1,
+                                   facecolor=color, edgecolor='#ddd'))
+            ax.text(d_idx + 0.5, y + 0.7, str(day),
+                    ha='center', va='center', fontsize=12,
+                    color='white' if ratio > 0.5 else COLOR_DARK)
+            if t > 0:
+                ax.text(d_idx + 0.5, y + 0.28, f'{fmt_num(t)}т',
+                        ha='center', va='center', fontsize=9,
+                        color='white' if ratio > 0.5 else COLOR_ACCENT)
+
+    ax.set_xlim(0, 7); ax.set_ylim(-0.2, n_weeks + 0.9)
+    ax.set_aspect('equal'); ax.axis('off')
+
+    ax.set_title(f'📅 Календарь — {title}',
+                 fontsize=15, fontweight='bold', color=COLOR_DARK, pad=15)
+
+    total = sum(by_day.values())
+    fig.text(0.5, 0.07,
+             f'Итого за месяц: {fmt_num(total)} т  ·  '
+             f'{fmt_num(round(total / TRUCK_CAPACITY, 2))} фур  ·  '
+             f'{stats["count"]} отгрузок',
+             ha='center', fontsize=12, color=COLOR_ACCENT, fontweight='bold')
+    return _save_fig_to_png(fig)
+
+
+def make_week_compare_png():
+    """6. Сравнение недель — A4 ландшафт."""
+    cmp = week_comparison()
+    this_by_day = {d: c['tonnage'] for d, c in cmp['this']['by_day'].items()}
+    last_by_day = {d: c['tonnage'] for d, c in cmp['last']['by_day'].items()}
+
+    this_week = [0.0] * 7
+    last_week = [0.0] * 7
+    for d_iso, t in this_by_day.items():
+        d = datetime.strptime(d_iso, '%Y-%m-%d').date()
+        this_week[d.weekday()] += t
+    for d_iso, t in last_by_day.items():
+        d = datetime.strptime(d_iso, '%Y-%m-%d').date()
+        last_week[d.weekday()] += t
+
+    labels = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+    x = list(range(7)); w = 0.38
+
+    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=130)
+    ax = fig.add_axes([0.08, 0.18, 0.86, 0.68])
+
+    b1 = ax.bar([i - w/2 for i in x], last_week, w,
+                label='Прошлая неделя', color='#b8c8db', edgecolor='#8a9cb5')
+    b2 = ax.bar([i + w/2 for i in x], this_week, w,
+                label='Эта неделя', color=COLOR_ACCENT, edgecolor='#2c4a70')
+
+    for bars in (b1, b2):
+        for bar in bars:
+            h = bar.get_height()
+            if h > 0:
+                ax.text(bar.get_x() + bar.get_width() / 2, h,
+                        f'{fmt_num(h)}', ha='center', va='bottom', fontsize=9)
+
+    ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=12)
+    ax.set_ylabel('Тонны', fontsize=12)
+    ax.grid(axis='y', linestyle='--', alpha=0.4)
+    ax.set_axisbelow(True)
+
+    t1 = cmp['this']['total_tonnage']
+    t0 = cmp['last']['total_tonnage']
+    diff = t1 - t0
+    sign = '+' if diff >= 0 else ''
+    ax.set_title(f'📈 Сравнение недель', fontsize=15, fontweight='bold',
+                 color=COLOR_DARK, pad=12)
+    ax.legend(fontsize=11)
+
+    fig.text(0.5, 0.06,
+             f'Прошлая ({ru_date(cmp["last_range"][0])}–{ru_date(cmp["last_range"][1])}): '
+             f'{fmt_num(t0)} т  ·  '
+             f'Эта: {fmt_num(t1)} т  ·  '
+             f'Разница: {sign}{fmt_num(diff)} т',
+             ha='center', fontsize=11, color=COLOR_ACCENT, fontweight='bold')
+    return _save_fig_to_png(fig)
+
+
+def make_client_trend_png(client_name):
+    """7. Тренд клиента — A4 ландшафт."""
+    shipments = get_shipments_by_client(client_name, limit=5000)
+    if not shipments: return None
+    by_date = defaultdict(float)
+    for s in shipments:
+        by_date[s['shipment_date']] += s['tonnage']
+    dates = sorted(by_date.keys())
+    d_objs = [datetime.strptime(d, '%Y-%m-%d').date() for d in dates]
+    values = [by_date[d] for d in dates]
+
+    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=130)
+    ax = fig.add_axes([0.08, 0.18, 0.86, 0.66])
+
+    ax.plot(d_objs, values, marker='o', color=COLOR_ACCENT,
+            linewidth=2, markersize=5)
+    ax.fill_between(d_objs, values, alpha=0.15, color=COLOR_ACCENT)
+
+    ax.set_title(f'📈 Тренд: {client_name[:60]}',
+                 fontsize=14, fontweight='bold', color=COLOR_DARK, pad=12)
+    ax.set_ylabel('Тонны', fontsize=11)
+    ax.grid(True, linestyle='--', alpha=0.4)
+    ax.set_axisbelow(True)
+
+    total = sum(values)
+    avg = total / len(values) if values else 0
+    fig.text(0.5, 0.06,
+             f'Всего: {fmt_num(total)} т  ·  {fmt_num(round(total / TRUCK_CAPACITY, 2))} фур  ·  '
+             f'{len(values)} дней  ·  Среднее: {fmt_num(round(avg, 1))} т/день',
+             ha='center', fontsize=11, color=COLOR_ACCENT, fontweight='bold')
+    return _save_fig_to_png(fig)
+
+
+def make_weekday_avg_png(start, end, title):
+    """8. Распределение по дням недели — A4 ландшафт."""
+    stats = stats_for_period(start, end)
+    if not stats['by_day']: return None
+    totals = [0.0] * 7
+    counts = [0] * 7
+    for d_iso, c in stats['by_day'].items():
+        d = datetime.strptime(d_iso, '%Y-%m-%d').date()
+        totals[d.weekday()] += c['tonnage']
+        counts[d.weekday()] += 1
+
+    labels = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+    x = list(range(7))
+
+    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=130)
+    ax = fig.add_axes([0.08, 0.18, 0.86, 0.68])
+
+    bars = ax.bar(x, totals, color=COLOR_ACCENT, edgecolor='#2c4a70', width=0.65)
+    for bar, v in zip(bars, totals):
+        if v > 0:
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
+                    f'{fmt_num(v)}т', ha='center', va='bottom', fontsize=10)
+
+    ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=12)
+    ax.set_ylabel('Тонны', fontsize=12)
+    ax.set_title(f'📊 Отгрузки по дням недели — {title}',
+                 fontsize=15, fontweight='bold', color=COLOR_DARK, pad=12)
+    ax.grid(axis='y', linestyle='--', alpha=0.4)
+    ax.set_axisbelow(True)
+
+    total = sum(totals)
+    fig.text(0.5, 0.06,
+             f'Итого: {fmt_num(total)} т  ·  '
+             f'{fmt_num(round(total / TRUCK_CAPACITY, 2))} фур',
+             ha='center', fontsize=11, color=COLOR_ACCENT, fontweight='bold')
+    return _save_fig_to_png(fig)
+
+
+def make_weekend_pie_png(start, end, title):
+    """9. Будни vs выходные — A4 ландшафт."""
+    stats = stats_for_period(start, end)
+    if not stats['by_day']: return None
+    weekday_t = 0.0
+    weekend_t = 0.0
+    for d_iso, c in stats['by_day'].items():
+        d = datetime.strptime(d_iso, '%Y-%m-%d').date()
+        if d.weekday() >= 5:
+            weekend_t += c['tonnage']
+        else:
+            weekday_t += c['tonnage']
+    if weekday_t == 0 and weekend_t == 0: return None
+
+    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=130)
+    ax = fig.add_axes([0.05, 0.08, 0.9, 0.82])
+
+    values = [weekday_t, weekend_t]
+    labels = ['Будни (Пн–Пт)', 'Выходные (Сб–Вс)']
+    colors = [COLOR_ACCENT, '#d9a651']
+
+    wedges, texts, autotexts = ax.pie(
+        values, labels=labels, autopct='%1.1f%%',
+        colors=colors, startangle=90,
+        textprops={'fontsize': 13}, explode=(0.02, 0.05))
+    for a in autotexts:
+        a.set_color('white'); a.set_fontweight('bold'); a.set_fontsize(14)
+
+    total = sum(values)
+    ax.set_title(f'🥧 Будни vs выходные — {title}\n'
+                 f'Всего: {fmt_num(total)} т',
+                 fontsize=15, fontweight='bold', color=COLOR_DARK, pad=15)
+    return _save_fig_to_png(fig)
+
+
+# ════════════════════════════ ОТПРАВКА ГРАФИКОВ ════════════════════════════
+
+def _send_chart(user_id, png, caption):
+    if not png:
+        send(user_id, "Нет данных за период.", main_menu(is_admin(user_id)))
+        return
+    try:
+        attach = upload_photo_bytes(user_id, png)
+        send(user_id, caption, main_menu(is_admin(user_id)), attachment=attach)
+    except Exception as e:
+        traceback.print_exc()
+        send(user_id, f"❌ Не удалось отправить: {e}",
+             main_menu(is_admin(user_id)))
+
+
+def _chart_caption(chart, title):
+    emoji_map = {
+        'by_day': '📊', 'top_clients': '🥇', 'top_trucks': '🚛',
+        'pie_clients': '🍰', 'calendar': '📅', 'week_compare': '📈',
+        'client_trend': '📈', 'weekday_avg': '📊', 'weekend_pie': '🥧',
+    }
+    name_map = {
+        'by_day': 'Отгрузки по дням', 'top_clients': 'Топ клиентов',
+        'top_trucks': 'Топ по фурам', 'pie_clients': 'Доли клиентов',
+        'calendar': 'Календарь', 'week_compare': 'Сравнение недель',
+        'client_trend': 'Тренд клиента', 'weekday_avg': 'По дням недели',
+        'weekend_pie': 'Будни/выходные',
+    }
+    return f"{emoji_map.get(chart,'📈')} {name_map.get(chart,'График')} — {title}"
+
+
+def show_chart(user_id, chart, period):
+    s, e, ptitle = _chart_period_bounds(period)
+    if not s:
+        send(user_id, "Не понял период.", main_menu(is_admin(user_id))); return
+    s_iso, e_iso = s.isoformat(), e.isoformat()
+
+    if chart == 'by_day':
+        png = make_chart_by_day_png(s, e, ptitle)
+        caption = _chart_caption(chart, ptitle)
+    elif chart == 'top_clients':
+        png = make_top_clients_png(s, e, ptitle)
+        caption = _chart_caption(chart, ptitle)
+    elif chart == 'top_trucks':
+        png = make_top_trucks_png(s, e, ptitle)
+        caption = _chart_caption(chart, ptitle)
+    elif chart == 'pie_clients':
+        png = make_pie_clients_png(s, e, ptitle)
+        caption = _chart_caption(chart, ptitle)
+    elif chart == 'weekday_avg':
+        png = make_weekday_avg_png(s, e, ptitle)
+        caption = _chart_caption(chart, ptitle)
+    elif chart == 'weekend_pie':
+        png = make_weekend_pie_png(s, e, ptitle)
+        caption = _chart_caption(chart, ptitle)
+    else:
+        send(user_id, "Неизвестный график.", main_menu(is_admin(user_id))); return
+    _send_chart(user_id, png, caption)
+
+
+def show_chart_custom(user_id, chart, start_iso, end_iso):
+    s = datetime.strptime(start_iso, '%Y-%m-%d').date()
+    e = datetime.strptime(end_iso, '%Y-%m-%d').date()
+    ptitle = f"{ru_date(s)}–{ru_date(e)}"
+
+    if chart == 'by_day':
+        png = make_chart_by_day_png(s, e, ptitle)
+    elif chart == 'top_clients':
+        png = make_top_clients_png(s, e, ptitle)
+    elif chart == 'top_trucks':
+        png = make_top_trucks_png(s, e, ptitle)
+    elif chart == 'pie_clients':
+        png = make_pie_clients_png(s, e, ptitle)
+    elif chart == 'weekday_avg':
+        png = make_weekday_avg_png(s, e, ptitle)
+    elif chart == 'weekend_pie':
+        png = make_weekend_pie_png(s, e, ptitle)
+    else:
+        png = None
+    _send_chart(user_id, png, _chart_caption(chart, ptitle))
+
+
+def show_calendar_chart(user_id, month_key):
+    today = tz_today()
+    if month_key == 'this':
+        y, m = today.year, today.month
+    elif month_key == 'last':
+        first = today.replace(day=1)
+        prev = first - timedelta(days=1)
+        y, m = prev.year, prev.month
+    else:
+        return
+    png = make_month_heatmap_png(y, m, f"{calendar.month_name[m]} {y}")
+    _send_chart(user_id, png, f"📅 Календарь — {calendar.month_name[m]} {y}")
+
+
+def show_calendar_chart_custom(user_id, year, month):
+    png = make_month_heatmap_png(year, month, f"{calendar.month_name[month]} {year}")
+    _send_chart(user_id, png, f"📅 Календарь — {calendar.month_name[month]} {year}")
 
 
 # ════════════════════════════ ИМПОРТ ════════════════════════════
@@ -1069,7 +1638,28 @@ def import_from_text(user_id, text):
     return imported, skipped, errors
 
 
-def _import_rows(user_id, rows):
+def import_csv_data(user_id, data_bytes, filename=''):
+    name = (filename or '').lower()
+    if name.endswith('.xlsx') or name.endswith('.xlsm'):
+        try:
+            from openpyxl import load_workbook
+        except ImportError:
+            return 0, 0, ["Библиотека openpyxl не установлена"]
+        try:
+            wb = load_workbook(io.BytesIO(data_bytes), data_only=True)
+            ws = wb.active
+            rows = [list(r) for r in ws.iter_rows(values_only=True)]
+        except Exception as e:
+            return 0, 0, [f"Не удалось прочитать Excel: {e}"]
+        # Пробуем распознать 1С-структуру
+        for r in rows[:300]:
+            if r and r[0] and 'расходный ордер' in str(r[0]).lower():
+                return import_1c_data(user_id, rows)
+        return _import_simple_rows(user_id, rows)
+    return 0, 0, ["Неподдерживаемый формат файла"]
+
+
+def _import_simple_rows(user_id, rows):
     if not rows or len(rows) < 2:
         return 0, 0, ["Нужна хотя бы одна строка данных"]
     header = [str(h or '').strip().lower() for h in rows[0]]
@@ -1120,14 +1710,14 @@ def _import_rows(user_id, rows):
 
 def import_1c_data(user_id, rows):
     """
-    Импорт из 1С. Группировка по (клиент, дата):
-      - несколько ордеров одного клиента в один день = ОДНА отгрузка
-      - вес суммируется
-      - разных дней → разные отгрузки
+    Импорт 1С «Выполнение сборки и отгрузки».
+    Одна строка клиента = одна отгрузка с итоговым весом.
     Вес нетто — колонка H (индекс 7).
     """
     n = len(rows)
+    imported = skipped = 0
     errors = []
+    samples = []
     date_re = re.compile(r'от\s+(\d{2}\.\d{2}\.\d{4})')
 
     service_prefixes = (
@@ -1135,172 +1725,92 @@ def import_1c_data(user_id, rows):
         'склад', 'получатель', 'регистратор', 'артикул', 'итого',
     )
 
-    print(f"[import-1c] Всего строк: {n}")
-
-    current_client = None
-    # ключ: (client, date_iso) → сумма кг
-    groups = defaultdict(float)
-    order_count = 0
-
     for idx, row in enumerate(rows):
         rn = idx + 1
         try:
-            if not row:
-                continue
+            if not row: continue
             r = list(row)
-            if len(r) < 8:
-                r = r + [None] * (8 - len(r))
+            if len(r) < 8: r = r + [None] * (8 - len(r))
             a = r[0]
             h = r[7] if len(r) > 7 else None
 
             a_str = str(a).strip() if a is not None else ''
-            if not a_str:
-                continue
+            if not a_str: continue
             a_low = a_str.lower()
 
-            # служебные заголовки
-            if any(a_low.startswith(p) for p in service_prefixes):
-                continue
-            # акты С/М
-            if a_low.startswith('акт с/м'):
-                continue
-            # строки товаров (артикул — число)
+            if any(a_low.startswith(p) for p in service_prefixes): continue
+            if 'расходный ордер' in a_low: continue
+            if a_low.startswith('акт с/м'): continue
             if a_str.replace('.', '').replace(',', '').replace(' ', '').isdigit():
                 continue
 
-            # «Расходный ордер ... от ДД.ММ.ГГГГ» = один ордер
-            if 'расходный ордер' in a_low:
-                if current_client is None:
-                    continue
-                m = date_re.search(a_str)
-                if not m:
-                    continue
-                try:
-                    d = datetime.strptime(m.group(1), '%d.%m.%Y').date()
-                except ValueError:
-                    continue
+            weight_cell = h
+            if weight_cell is None or str(weight_cell).strip() == '':
+                for cell in reversed(r):
+                    if cell is None: continue
+                    s = str(cell).replace(',', '.').replace(' ', '').strip()
+                    if s and re.match(r'^\d+(\.\d+)?$', s):
+                        weight_cell = cell; break
 
-                weight_cell = h
-                if weight_cell is None or str(weight_cell).strip() == '':
-                    for cell in reversed(r):
-                        if cell is None:
-                            continue
-                        s = str(cell).replace(',', '.').replace(' ', '').strip()
-                        if s and re.match(r'^\d+(\.\d+)?$', s):
-                            weight_cell = cell
+            if weight_cell is None: skipped += 1; continue
+            g_str = str(weight_cell).replace(',', '.').replace(' ', '').strip()
+            if not g_str: skipped += 1; continue
+            try: weight_kg = float(g_str)
+            except ValueError: skipped += 1; continue
+            if weight_kg <= 0: skipped += 1; continue
+            weight_t = round(weight_kg / 1000.0, 3)
+
+            shipment_date = None
+            j = idx + 1
+            while j < n:
+                rj = rows[j]
+                if not rj: j += 1; continue
+                aj = str(rj[0]).strip() if rj[0] is not None else ''
+                aj_low = aj.lower()
+                if 'расходный ордер' in aj_low:
+                    m = date_re.search(aj)
+                    if m:
+                        try:
+                            shipment_date = datetime.strptime(
+                                m.group(1), '%d.%m.%Y').date()
+                        except ValueError: pass
+                    break
+                if aj and not aj.replace('.', '').replace(',', '').replace(' ', '').isdigit():
+                    if not any(aj_low.startswith(p) for p in service_prefixes):
+                        if 'расходный ордер' not in aj_low and not aj_low.startswith('акт с/м'):
                             break
+                j += 1
 
-                if weight_cell is None:
-                    continue
-                g_str = str(weight_cell).replace(',', '.').replace(' ', '').strip()
-                if not g_str:
-                    continue
-                try:
-                    weight_kg = float(g_str)
-                except ValueError:
-                    continue
-                if weight_kg <= 0:
-                    continue
+            if not shipment_date:
+                shipment_date = tz_today()
 
-                groups[(current_client, d.isoformat())] += weight_kg
-                order_count += 1
-                continue
-
-            # всё остальное — клиент
-            current_client = a_str
-
+            add_shipment(a_str, weight_t, shipment_date.isoformat(),
+                         user_id, comment='1С')
+            if len(samples) < 15:
+                samples.append(f"{a_str[:55]} | {shipment_date.isoformat()} | "
+                               f"{weight_kg} кг → {weight_t} т")
+            imported += 1
         except Exception as e:
-            errors.append(f"Строка {rn}: {e}")
-
-    # Импорт сгруппированных отгрузок
-    imported = 0
-    samples = []
-    for (client, d_iso), weight_kg in groups.items():
-        weight_t = round(weight_kg / 1000.0, 3)
-        if weight_t <= 0:
-            continue
-        add_shipment(client, weight_t, d_iso, user_id, comment='1С')
-        imported += 1
-        if len(samples) < 15:
-            samples.append(f"{client[:45]} | {d_iso} | "
-                           f"{weight_kg} кг → {weight_t} т")
-
-    print(f"[import-1c] Ордеров: {order_count}, сгруппировано отгрузок: {imported}")
+            errors.append(f"Строка {rn}: {e}"); skipped += 1
 
     if samples:
         try:
-            msg = (f"📋 Импорт 1С\n"
-                   f"• Ордеров: {order_count}\n"
-                   f"• Отгрузок (по дням): {imported}\n\n"
-                   f"Примеры:\n" + "\n".join(f"• {s}" for s in samples))
-            send(user_id, msg)
-        except Exception:
-            traceback.print_exc()
-
-    return imported, 0, errors
-
-
-def import_csv_data(user_id, data_bytes, filename=''):
-    name = (filename or '').lower()
-
-    if name.endswith('.xlsx') or name.endswith('.xlsm'):
-        try:
-            from openpyxl import load_workbook
-        except ImportError:
-            return 0, 0, ["Библиотека openpyxl не установлена"]
-        try:
-            wb = load_workbook(io.BytesIO(data_bytes), data_only=True)
-            ws = wb.active
-            rows = [list(r) for r in ws.iter_rows(values_only=True)]
-        except Exception as e:
-            return 0, 0, [f"Не удалось прочитать Excel: {e}"]
-
-        for r in rows[:300]:
-            if r and r[0] and 'расходный ордер' in str(r[0]).lower():
-                return import_1c_data(user_id, rows)
-        return _import_rows(user_id, rows)
-
-    if name.endswith('.xls'):
-        return 0, 0, ["Формат .xls не поддерживается. Сохраните как .xlsx"]
-
-    try:
-        text = data_bytes.decode('utf-8-sig')
-    except UnicodeDecodeError:
-        try: text = data_bytes.decode('cp1251')
-        except Exception: return 0, 0, ["Не удалось прочитать файл"]
-
-    lines = [ln for ln in text.splitlines() if ln.strip()]
-    if not lines: return 0, 0, ["Файл пуст"]
-
-    for ln in lines[:50]:
-        if 'расходный ордер' in ln.lower():
-            delim = ';' if ';' in lines[0] else ('\t' if '\t' in lines[0] else ',')
-            reader = list(csv.reader(lines, delimiter=delim))
-            return import_1c_data(user_id, reader)
-
-    first = lines[0]
-    if ';' in first: delim = ';'
-    elif '\t' in first: delim = '\t'
-    elif ',' in first: delim = ','
-    else: return 0, 0, ["Не найден разделитель"]
-    rows = list(csv.reader(lines, delimiter=delim))
-    return _import_rows(user_id, rows)
+            send(user_id, "📋 Примеры импортированных:\n" +
+                 "\n".join(f"• {s}" for s in samples))
+        except Exception: traceback.print_exc()
+    return imported, skipped, errors
 
 
 def handle_csv_attachment(user_id, attachments):
-    try:
-        make_backup('before-import')
-    except Exception:
-        traceback.print_exc()
+    try: make_backup('before-import')
+    except Exception: traceback.print_exc()
 
     for att in attachments:
-        if att.get('type') != 'doc':
-            continue
+        if att.get('type') != 'doc': continue
         doc = att.get('doc') or {}
         url = doc.get('url')
         filename = doc.get('title', '')
-        if not url:
-            continue
+        if not url: continue
         send(user_id, f"📥 Скачиваю файл: {filename}")
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -1309,26 +1819,22 @@ def handle_csv_attachment(user_id, attachments):
         except Exception as e:
             send(user_id, f"❌ Не удалось скачать файл: {e}")
             clear_state(user_id); return
-
         send(user_id, "⚙️ Обрабатываю файл (может занять до минуты)...")
         imported, skipped, errors = import_csv_data(user_id, data, filename)
         clear_state(user_id)
-
         result = [f"📥 Импорт завершён:", f"• Добавлено: {imported}"]
         if skipped: result.append(f"• Пропущено: {skipped}")
         if errors:
             result.append(""); result.append("Примеры ошибок:")
             result.extend(errors[:5])
-        result.append("")
-        result.append("Проверьте: 📊 Статистика → Этот год")
-        result.append("Если что-то не так — ⚙️ Настройки → ↩️ Откатить базу")
+        result.append(""); result.append("Проверьте: 📊 Статистика → Этот год")
         send(user_id, "\n".join(result), admin_menu())
         return
     send(user_id, "❌ Во вложении не найден файл.", admin_menu())
     clear_state(user_id)
 
 
-# ════════════════════════════ ЭКСПОРТ ════════════════════════════
+# ════════════════════════════ ЭКСПОРТ / ЗАГРУЗКА ФАЙЛОВ ════════════════════════════
 
 def upload_csv_doc(user_id, data, filename):
     fd, path = tempfile.mkstemp(suffix='.csv')
@@ -1346,14 +1852,12 @@ def upload_csv_doc(user_id, data, filename):
 
 
 def upload_photo_bytes(user_id, photo_bytes):
-    """Загружает фото в ВК. Конвертирует PNG → JPEG, затем два способа загрузки."""
+    """Конвертирует PNG в JPEG и загружает в ВК."""
     fd, path_png = tempfile.mkstemp(suffix='.png')
     os.close(fd)
     path_jpg = path_png.replace('.png', '.jpg')
     try:
-        with open(path_png, 'wb') as f:
-            f.write(photo_bytes)
-
+        with open(path_png, 'wb') as f: f.write(photo_bytes)
         converted = False
         try:
             from PIL import Image
@@ -1364,15 +1868,10 @@ def upload_photo_bytes(user_id, photo_bytes):
             print(f"[upload_photo] PIL failed: {e}")
             traceback.print_exc()
             try:
-                shutil.copy2(path_png, path_jpg)
-                converted = True
-            except Exception:
-                traceback.print_exc()
-
+                shutil.copy2(path_png, path_jpg); converted = True
+            except Exception: traceback.print_exc()
         upload_path = path_jpg if converted else path_png
-
         upload = vk_api.VkUpload(vk_session)
-
         try:
             photo = upload.photo_messages(photos=upload_path, peer_id=user_id)[0]
             if photo and photo.get('id'):
@@ -1380,43 +1879,33 @@ def upload_photo_bytes(user_id, photo_bytes):
         except Exception as e:
             print(f"[upload_photo] photo_messages failed: {e}")
             traceback.print_exc()
-
+        # fallback
         try:
             server = vk.photos.getMessagesUploadServer(peer_id=user_id)
             upload_url = server.get('upload_url')
-            if not upload_url:
-                raise RuntimeError("Нет upload_url")
-
+            if not upload_url: raise RuntimeError("Нет upload_url")
             boundary = '----VKBotBoundary' + str(int(time.time() * 1000))
-            with open(upload_path, 'rb') as f:
-                file_data = f.read()
-
+            with open(upload_path, 'rb') as f: file_data = f.read()
             ext = 'jpg' if converted else 'png'
             ctype = 'image/jpeg' if converted else 'image/png'
-
-            body = (
-                f'--{boundary}\r\n'
-                f'Content-Disposition: form-data; name="photo"; '
-                f'filename="photo.{ext}"\r\n'
-                f'Content-Type: {ctype}\r\n\r\n'
-            ).encode('utf-8') + file_data + f'\r\n--{boundary}--\r\n'.encode('utf-8')
-
+            body = (f'--{boundary}\r\n'
+                    f'Content-Disposition: form-data; name="photo"; '
+                    f'filename="photo.{ext}"\r\n'
+                    f'Content-Type: {ctype}\r\n\r\n').encode('utf-8') + \
+                   file_data + f'\r\n--{boundary}--\r\n'.encode('utf-8')
             req = urllib.request.Request(
                 upload_url, data=body,
                 headers={'Content-Type': f'multipart/form-data; boundary={boundary}'})
             with urllib.request.urlopen(req, timeout=60) as resp:
                 uploaded = json.loads(resp.read().decode('utf-8'))
-
             photo_data = vk.photos.saveMessagesPhoto(
-                photo=uploaded['photo'],
-                server=uploaded['server'],
+                photo=uploaded['photo'], server=uploaded['server'],
                 hash=uploaded['hash'])
             if photo_data and photo_data[0].get('id'):
                 return f"photo{photo_data[0]['owner_id']}_{photo_data[0]['id']}"
         except Exception as e:
             print(f"[upload_photo] fallback failed: {e}")
             traceback.print_exc()
-
         raise RuntimeError("Не удалось загрузить фото ни одним способом")
     finally:
         for p in (path_png, path_jpg):
@@ -1501,7 +1990,7 @@ def show_client_history(user_id, cid):
     send(user_id, "\n".join(lines), client_card_menu(cid))
 
 
-# ════════════════════════════ СРАВНЕНИЕ НЕДЕЛЬ ════════════════════════════
+# ════════════════════════════ СРАВНЕНИЕ НЕДЕЛЬ (текст) ════════════════════════════
 
 def show_week_comparison(user_id):
     cmp = week_comparison()
@@ -1527,87 +2016,6 @@ def show_week_comparison(user_id):
              f"Разница: {fmt_num(diff_t)} т ({pct_line})",
              f"          {fmt_num(diff_trucks)} фур"]
     send(user_id, "\n".join(lines), main_menu(is_admin(user_id)))
-
-
-# ════════════════════════════ ГРАФИКИ ════════════════════════════
-
-def make_chart_png(start, end, title, shipments):
-    by_day = defaultdict(float)
-    d = start
-    while d <= end:
-        by_day[d] = 0.0; d += timedelta(days=1)
-    for s in shipments:
-        day = datetime.strptime(s['shipment_date'], '%Y-%m-%d').date()
-        by_day[day] += s['tonnage']
-    dates = sorted(by_day.keys())
-    values = [by_day[d] for d in dates]
-    fig, ax = plt.subplots(figsize=(10, 5))
-    bars = ax.bar(dates, values, color='#4a76a8', edgecolor='#2c4a70')
-    ax.set_title(title, fontsize=14, fontweight='bold')
-    ax.set_ylabel('Тонны')
-    ax.grid(axis='y', linestyle='--', alpha=0.5)
-    ax.set_axisbelow(True)
-    for bar, v in zip(bars, values):
-        if v > 0:
-            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
-                    f'{v:.0f}', ha='center', va='bottom', fontsize=9)
-    if len(dates) > 7:
-        ax.xaxis.set_major_formatter(DateFormatter('%d.%m'))
-        plt.xticks(rotation=45, ha='right')
-    else:
-        ax.set_xticks(dates)
-        ax.set_xticklabels([d.strftime('%d.%m') for d in dates])
-    plt.tight_layout()
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
-    plt.close(fig); buf.seek(0)
-    return buf.read()
-
-
-def show_chart(user_id, period=None, start=None, end=None, client_name=None):
-    today = tz_today()
-    if client_name:
-        shipments = get_shipments_by_client(client_name, limit=2000)
-        if not shipments:
-            send(user_id, "Нет данных.", main_menu(is_admin(user_id))); return
-        dates = sorted(set(s['shipment_date'] for s in shipments))
-        s = datetime.strptime(dates[0], '%Y-%m-%d').date()
-        e = datetime.strptime(dates[-1], '%Y-%m-%d').date()
-        title = f"{client_name} — отгрузки ({ru_date(s)}–{ru_date(e)})"
-    else:
-        if period == 'week':
-            s = today - timedelta(days=today.weekday()); e = today
-            title = f"Отгрузки за неделю ({ru_date(s)}–{ru_date(e)})"
-        elif period == 'last_week':
-            s = today - timedelta(days=today.weekday() + 7); e = s + timedelta(days=6)
-            title = f"Отгрузки за прошлую неделю"
-        elif period == 'month':
-            s = today.replace(day=1); e = today
-            title = f"Отгрузки за месяц ({ru_date(s)}–{ru_date(e)})"
-        elif period == 'last_month':
-            first = today.replace(day=1); e = first - timedelta(days=1)
-            s = e.replace(day=1); title = f"Отгрузки за прошлый месяц"
-        elif period == 'custom':
-            s = datetime.strptime(start, '%Y-%m-%d').date()
-            e = datetime.strptime(end, '%Y-%m-%d').date()
-            title = f"Отгрузки {ru_date(s)}–{ru_date(e)}"
-        else:
-            s, e = today - timedelta(days=6), today
-            title = "Отгрузки за последние 7 дней"
-        shipments = get_shipments_by_period(s, e)
-    if not shipments:
-        send(user_id, "Нет данных за период.", main_menu(is_admin(user_id))); return
-    png = make_chart_png(s, e, title, shipments)
-    try:
-        attach = upload_photo_bytes(user_id, png)
-        total = sum(x['tonnage'] for x in shipments)
-        caption = (f"📈 {title}\n\n"
-                   f"Итого: {fmt_num(total)} т, "
-                   f"{fmt_num(round(total / TRUCK_CAPACITY, 2))} фур")
-        send(user_id, caption, main_menu(is_admin(user_id)), attachment=attach)
-    except Exception as e:
-        traceback.print_exc()
-        send(user_id, f"❌ Не удалось отправить график: {e}", main_menu(is_admin(user_id)))
 
 
 # ════════════════════════════ АДМИН ════════════════════════════
@@ -1652,15 +2060,58 @@ def handle_payload(user_id, payload):
     elif cmd == 'to_menu':
         clear_state(user_id)
         show_main_menu(user_id)
-    elif cmd == 'back_to_day':
-        d = payload.get('date')
-        if d:
-            try:
-                show_day_shipments(user_id, datetime.strptime(d, '%Y-%m-%d').date())
-            except Exception:
-                show_main_menu(user_id)
+    elif cmd == 'charts_menu':
+        clear_state(user_id)
+        send(user_id, "📈 Выберите график (все в формате А4):", charts_menu())
+
+    elif cmd == 'chart_pick':
+        chart = payload.get('chart')
+        if chart == 'calendar':
+            send(user_id, "📅 Выберите месяц:", chart_calendar_menu())
+        elif chart == 'week_compare':
+            png = make_week_compare_png()
+            _send_chart(user_id, png, "📈 Сравнение недель")
+        elif chart == 'client_trend':
+            clients = get_clients()
+            if not clients:
+                send(user_id, "📁 Справочник пуст.", main_menu(is_admin(user_id))); return
+            send(user_id, "👤 Выберите клиента для тренда:",
+                 clients_menu_chart(clients, page=0))
         else:
-            show_main_menu(user_id)
+            send(user_id, "📅 Выберите период:", chart_period_menu(chart))
+
+    elif cmd == 'chart_draw':
+        chart = payload.get('chart')
+        period = payload.get('period')
+        show_chart(user_id, chart, period)
+
+    elif cmd == 'chart_draw_custom':
+        chart = payload.get('chart')
+        update_state(user_id, awaiting='chart_custom_start', chart_type=chart)
+        send(user_id, "Введите начальную дату (ДД.ММ.ГГГГ):", cancel_menu())
+
+    elif cmd == 'chart_calendar_month':
+        month = payload.get('month')
+        if month == 'custom':
+            update_state(user_id, awaiting='chart_calendar_custom')
+            send(user_id, "Введите месяц и год, например 09.2026:", cancel_menu())
+        else:
+            show_calendar_chart(user_id, month)
+
+    elif cmd == 'chart_client_pick':
+        cid = payload.get('cid')
+        c = get_client(cid)
+        if not c:
+            send(user_id, "❌ Клиент не найден.", main_menu(is_admin(user_id))); return
+        png = make_client_trend_png(c['name'])
+        _send_chart(user_id, png, f"📈 Тренд: {c['name'][:60]}")
+
+    elif cmd == 'chart_clients_page':
+        page = int(payload.get('page', 0))
+        clients = get_clients()
+        send(user_id, "👤 Выберите клиента:",
+             clients_menu_chart(clients, page=page))
+
     elif cmd == 'day_image':
         d = payload.get('date')
         if d:
@@ -1671,6 +2122,17 @@ def handle_payload(user_id, payload):
                 show_main_menu(user_id)
         else:
             show_day_image(user_id, tz_today())
+
+    elif cmd == 'back_to_day':
+        d = payload.get('date')
+        if d:
+            try:
+                show_day_shipments(user_id, datetime.strptime(d, '%Y-%m-%d').date())
+            except Exception:
+                show_main_menu(user_id)
+        else:
+            show_main_menu(user_id)
+
     elif cmd == 'toggle_report':
         new_val = toggle_morning_report(user_id)
         label = 'включена' if new_val else 'выключена'
@@ -1681,19 +2143,14 @@ def handle_payload(user_id, payload):
         if not is_admin(user_id):
             send(user_id, "❌ Только для администраторов."); return
         update_state(user_id, awaiting='text_import')
-        text = ("✍️ Импорт текстом\n\n"
-                "Скопируйте данные из 1С или Excel и отправьте одним сообщением.\n\n"
-                "Формат строк:\nКлиент | Дата | Тоннаж\n\n"
-                "Например:\nООО Ромашка 01.2026 150\nООО Ромашка 02.2026 180\n\n"
-                "Дата: 01.2026, 15.01.2026, янв 2026.\n"
-                "Заголовок (Клиент Дата Тоннаж) — можно, бот пропустит.")
-        send(user_id, text, cancel_menu())
+        send(user_id, "✍️ Импорт текстом\n\nФормат: Клиент | Дата | Тоннаж",
+             cancel_menu())
 
     elif cmd == 'import_csv':
         if not is_admin(user_id):
             send(user_id, "❌ Только для администраторов."); return
         update_state(user_id, awaiting='csv_import')
-        send(user_id, "📥 Отправьте файл .xlsx из 1С как документ (скрепка → Документ).",
+        send(user_id, "📥 Отправьте файл .xlsx как документ (скрепка → Документ).",
              cancel_menu())
 
     elif cmd == 'rollback_menu':
@@ -1702,34 +2159,30 @@ def handle_payload(user_id, payload):
         backups = list_backups(limit=200)
         if not backups:
             send(user_id, "📂 Резервных копий пока нет.", admin_menu()); return
-        send(user_id, f"↩️ Выберите резервную копию для отката "
-                      f"(всего {len(backups)}). Перед откатом создаётся "
-                      f"ещё одна копия текущего состояния.",
+        send(user_id, f"↩️ Выберите копию (всего {len(backups)}):",
              rollback_menu(backups, page=0))
+
     elif cmd == 'rollback_page':
         backups = list_backups(limit=200)
         page = int(payload.get('page', 0))
         send(user_id, f"↩️ Резервные копии (стр. {page + 1}):",
              rollback_menu(backups, page=page))
+
     elif cmd == 'restore_backup':
         if not is_admin(user_id):
             send(user_id, "❌ Только для администраторов."); return
         name = payload.get('name', '')
         ok, err = restore_backup(name)
         if ok:
-            send(user_id, f"✅ База откатана к копии:\n{name}\n\n"
-                          f"Проверьте: 📊 Статистика → Этот год",
-                 admin_menu())
+            send(user_id, f"✅ База откатана к копии:\n{name}", admin_menu())
         else:
             send(user_id, f"❌ Не удалось откатить: {err}", admin_menu())
 
     elif cmd == 'clear_period':
         if not is_admin(user_id):
             send(user_id, "❌ Только для администраторов."); return
-        send(user_id, "🗑 За какой период удалить отгрузки?\n\n"
-                      "Перед удалением создаётся резервная копия базы.\n"
-                      "Восстановить можно через ⚙️ Настройки → ↩️ Откатить базу.",
-             clear_period_menu())
+        send(user_id, "🗑 За какой период удалить отгрузки?", clear_period_menu())
+
     elif cmd == 'clear_period_confirm':
         if not is_admin(user_id):
             send(user_id, "❌ Только для администраторов."); return
@@ -1743,8 +2196,7 @@ def handle_payload(user_id, payload):
             send(user_id, "Не понял период.", admin_menu()); return
         cnt = count_shipments_period(s.isoformat(), e.isoformat())
         if cnt == 0:
-            send(user_id, f"За период «{label}» нет отгрузок.",
-                 admin_menu()); return
+            send(user_id, f"За период «{label}» нет отгрузок.", admin_menu()); return
         update_state(user_id, awaiting='clear_period_final_confirm',
                      clear_start=s.isoformat(), clear_end=e.isoformat(),
                      clear_label=label, clear_count=cnt)
@@ -1753,10 +2205,10 @@ def handle_payload(user_id, payload):
                       payload=_p(cmd='clear_period_do'))
         kb.add_button('❌ Отмена', color=VkKeyboardColor.SECONDARY,
                       payload=_p(cmd='cancel'))
-        send(user_id, f"⚠️ Подтвердите удаление.\n\n"
-                      f"Период: {label}\n"
-                      f"Будет удалено отгрузок: {cnt}\n\n"
-                      f"Нажмите «Да, удалить» для подтверждения.", kb.get_keyboard())
+        send(user_id, f"⚠️ Подтвердите удаление.\n\nПериод: {label}\n"
+                      f"Будет удалено: {cnt}\n\nНажмите «Да, удалить».",
+             kb.get_keyboard())
+
     elif cmd == 'clear_period_do':
         if not is_admin(user_id):
             send(user_id, "❌ Только для администраторов."); return
@@ -1765,18 +2217,12 @@ def handle_payload(user_id, payload):
         end = st.get('clear_end')
         label = st.get('clear_label', '')
         if not start or not end:
-            send(user_id, "❌ Нет активного периода для очистки.",
-                 admin_menu()); return
-        try:
-            make_backup('before-clear')
-        except Exception:
-            traceback.print_exc()
+            send(user_id, "❌ Нет активного периода.", admin_menu()); return
+        try: make_backup('before-clear')
+        except Exception: traceback.print_exc()
         deleted = delete_shipments_period(start, end)
         clear_state(user_id)
-        send(user_id, f"🗑 Удалено отгрузок: {deleted}\n"
-                      f"Период: {label}\n\n"
-                      f"Если это была ошибка — ⚙️ Настройки → ↩️ Откатить базу.",
-             admin_menu())
+        send(user_id, f"🗑 Удалено: {deleted}\nПериод: {label}", admin_menu())
 
     elif cmd == 'pick_date':
         d = payload.get('date')
@@ -1784,11 +2230,11 @@ def handle_payload(user_id, payload):
         elif d == 'tomorrow': target = tz_today() + timedelta(days=1)
         elif d == 'custom':
             update_state(user_id, awaiting='add_custom_date')
-            send(user_id, "Введите дату (ДД.ММ.ГГГГ). Можно: 'сегодня', 'завтра', 'послезавтра'.",
-                 cancel_menu()); return
+            send(user_id, "Введите дату (ДД.ММ.ГГГГ):", cancel_menu()); return
         else: return
         update_state(user_id, pending={'date': target.isoformat()})
         show_client_picker(user_id, action='add')
+
     elif cmd == 'pick_client':
         cid = payload.get('cid')
         action = payload.get('action', 'add')
@@ -1808,43 +2254,53 @@ def handle_payload(user_id, payload):
             s = get_shipment(sid)
             send(user_id, f"✅ Клиент изменён.\n\n{format_shipment_card(s)}",
                  main_menu(is_admin(user_id)))
+
     elif cmd == 'clients_page':
         show_client_picker(user_id, action=payload.get('action', 'add'),
                            sid=payload.get('sid'), page=int(payload.get('page', 0)))
+
     elif cmd == 'new_client':
         update_state(user_id, awaiting='new_client_name',
                      action=payload.get('action', 'add'), sid=payload.get('sid'))
         send(user_id, "Введите имя нового клиента:", cancel_menu())
+
     elif cmd == 'pick_tonnage':
         t = payload.get('t')
         if t == 'custom':
             update_state(user_id, awaiting='add_tonnage')
-            send(user_id, "Введите тоннаж числом (например, 25.5):", cancel_menu()); return
+            send(user_id, "Введите тоннаж числом:", cancel_menu()); return
         try: t = float(t)
         except (TypeError, ValueError): return
         p = get_state(user_id).get('pending', {})
         p['tonnage'] = t
         update_state(user_id, awaiting=None, pending=p)
         show_confirm(user_id)
+
     elif cmd == 'save_shipment':
         on_save_shipment(user_id)
+
     elif cmd == 'restart_add':
         start_add(user_id)
+
     elif cmd == 'add_again':
         p = get_state(user_id).get('pending', {})
         d = p.get('date') or tz_today().isoformat()
         start_add_with_date(user_id, d)
+
     elif cmd == 'add_again_for':
         start_add_with_date(user_id, payload.get('date') or tz_today().isoformat())
+
     elif cmd == 'add_comment':
         update_state(user_id, awaiting='add_comment')
         send(user_id, "Введите комментарий (или '-' чтобы убрать):", cancel_menu())
+
     elif cmd == 'stats':
         period = payload.get('period')
         if period == 'custom':
             update_state(user_id, awaiting='stats_custom_start')
             send(user_id, "Введите начальную дату (ДД.ММ.ГГГГ):", cancel_menu()); return
         show_stats(user_id, period=period)
+
     elif cmd == 'export_csv':
         on_export_csv(user_id)
     elif cmd == 'export_csv_all':
@@ -1852,16 +2308,17 @@ def handle_payload(user_id, payload):
     elif cmd == 'download_db':
         on_download_db(user_id)
     elif cmd == 'admin_menu':
-        if is_admin(user_id):
-            send(user_id, "⚙️ Настройки:", admin_menu())
+        if is_admin(user_id): send(user_id, "⚙️ Настройки:", admin_menu())
     elif cmd == 'open_shipment':
         on_open_shipment(user_id, payload)
+
     elif cmd == 'edit_shipment':
         sid = payload.get('sid')
         s = get_shipment(sid)
         if not s:
             send(user_id, "Не найдено.", main_menu(is_admin(user_id))); return
         send(user_id, f"Что изменить?\n\n{format_shipment_card(s)}", edit_menu(sid))
+
     elif cmd == 'edit_field':
         sid = payload.get('sid')
         field = payload.get('field')
@@ -1876,18 +2333,20 @@ def handle_payload(user_id, payload):
                  cancel_menu())
         elif field == 'date':
             update_state(user_id, awaiting='edit_date', sid=sid)
-            send(user_id, f"Текущая дата: {ru_date(s['shipment_date'])}\nВведите новую (ДД.ММ.ГГГГ):",
+            send(user_id, f"Текущая дата: {ru_date(s['shipment_date'])}\nВведите новую:",
                  cancel_menu())
         elif field == 'comment':
             update_state(user_id, awaiting='edit_comment', sid=sid)
-            send(user_id, f"Текущий комментарий: {s.get('comment') or '(нет)'}\nВведите новый:",
-                 cancel_menu())
+            send(user_id, f"Текущий комментарий: {s.get('comment') or '(нет)'}\n"
+                          f"Введите новый:", cancel_menu())
+
     elif cmd == 'del_shipment':
         sid = payload.get('sid')
         if not is_admin(user_id):
             send(user_id, "❌ Только администратор."); return
         delete_shipment(sid)
         send(user_id, "🗑 Удалено.", main_menu(is_admin(user_id)))
+
     elif cmd == 'open_client':
         show_client_card(user_id, payload.get('cid'))
     elif cmd == 'clients_summary':
@@ -1898,21 +2357,16 @@ def handle_payload(user_id, payload):
         c = get_client(payload.get('cid'))
         if not c:
             send(user_id, "❌ Клиент не найден.", main_menu(is_admin(user_id))); return
-        show_chart(user_id, client_name=c['name'])
+        png = make_client_trend_png(c['name'])
+        _send_chart(user_id, png, f"📈 Тренд: {c['name'][:60]}")
+
     elif cmd == 'week_compare':
         show_week_comparison(user_id)
-    elif cmd == 'chart':
-        period = payload.get('period')
-        if period == 'custom':
-            update_state(user_id, awaiting='chart_custom_start')
-            send(user_id, "Введите начальную дату (ДД.ММ.ГГГГ):", cancel_menu()); return
-        show_chart(user_id, period=period)
 
 
 def _period_bounds(period):
     today = tz_today()
-    if period == 'today':
-        return today, today, f"Сегодня ({ru_date(today)})"
+    if period == 'today': return today, today, f"Сегодня ({ru_date(today)})"
     if period == 'yesterday':
         y = today - timedelta(days=1)
         return y, y, f"Вчера ({ru_date(y)})"
@@ -1933,7 +2387,7 @@ def _period_bounds(period):
 MAIN_MENU_BUTTONS = {
     '➕ Добавить погрузку', '📋 Сегодня', '📋 Завтра', '📅 Другая дата',
     '📊 Статистика', '📁 Клиенты', '❓ Помощь', '⚙️ Настройки',
-    '🖼 Картинка дня'
+    '🖼 Картинка дня', '📈 Графики'
 }
 
 
@@ -1954,10 +2408,42 @@ def handle_text(user_id, text):
     state = get_state(user_id)
     awaiting = state.get('awaiting')
 
+    if awaiting == 'chart_custom_start':
+        d = parse_date(text)
+        if not d:
+            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:", cancel_menu()); return
+        update_state(user_id, awaiting='chart_custom_end',
+                     chart_start=d.isoformat())
+        send(user_id, "Введите конечную дату (ДД.ММ.ГГГГ):", cancel_menu())
+        return
+
+    if awaiting == 'chart_custom_end':
+        d = parse_date(text)
+        if not d:
+            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:", cancel_menu()); return
+        chart = state.get('chart_type')
+        start = state.get('chart_start')
+        clear_state(user_id)
+        if chart and start:
+            show_chart_custom(user_id, chart, start, d.isoformat())
+        else:
+            show_main_menu(user_id)
+        return
+
+    if awaiting == 'chart_calendar_custom':
+        m = re.match(r'(\d{1,2})[./](\d{4})', text.strip())
+        if not m:
+            send(user_id, "❌ Формат: ММ.ГГГГ (например 09.2026):", cancel_menu()); return
+        month = int(m.group(1)); year = int(m.group(2))
+        if not (1 <= month <= 12):
+            send(user_id, "❌ Месяц от 1 до 12:", cancel_menu()); return
+        clear_state(user_id)
+        show_calendar_chart_custom(user_id, year, month)
+        return
+
     if awaiting == 'text_import':
         if len(text) < 5:
-            send(user_id, "❌ Слишком короткий текст. Пришлите данные или нажмите «Отмена».",
-                 cancel_menu()); return
+            send(user_id, "❌ Слишком короткий текст.", cancel_menu()); return
         imported, skipped, errors = import_from_text(user_id, text)
         clear_state(user_id)
         result = [f"✍️ Импорт завершён:", f"• Добавлено: {imported}"]
@@ -1965,38 +2451,35 @@ def handle_text(user_id, text):
         if errors:
             result.append(""); result.append("Примеры ошибок:")
             result.extend(errors[:5])
-        result.append(""); result.append("Проверьте: 📊 Статистика → Этот год")
         send(user_id, "\n".join(result), admin_menu())
         return
 
     if awaiting == 'csv_import':
-        send(user_id, "📎 Пришлите файл .xlsx как документ (скрепка → Документ) "
-                      "или нажмите «Отмена».", cancel_menu())
+        send(user_id, "📎 Пришлите файл .xlsx как документ.", cancel_menu())
         return
 
     if awaiting == 'clear_period_custom_start':
         d = parse_date(text)
         if not d:
-            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:", cancel_menu()); return
+            send(user_id, "❌ Введите ДД.ММ.ГГГГ:", cancel_menu()); return
         update_state(user_id, awaiting='clear_period_custom_end',
                      clear_start=d.isoformat())
-        send(user_id, "Введите конечную дату (ДД.ММ.ГГГГ):", cancel_menu())
+        send(user_id, "Введите конечную дату:", cancel_menu())
         return
+
     if awaiting == 'clear_period_custom_end':
         d = parse_date(text)
         if not d:
-            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:", cancel_menu()); return
+            send(user_id, "❌ Введите ДД.ММ.ГГГГ:", cancel_menu()); return
         s_iso = state.get('clear_start')
-        if not s_iso:
-            send(user_id, "❌ Ошибка: начало периода потеряно.", admin_menu()); return
         try:
             s = datetime.strptime(s_iso, '%Y-%m-%d').date()
-        except ValueError:
-            send(user_id, "❌ Ошибка формата.", admin_menu()); return
+        except Exception:
+            send(user_id, "❌ Ошибка.", admin_menu()); return
         cnt = count_shipments_period(s.isoformat(), d.isoformat())
         if cnt == 0:
             clear_state(user_id)
-            send(user_id, f"За период {ru_date(s)}–{ru_date(d)} нет отгрузок.",
+            send(user_id, f"Нет отгрузок за период {ru_date(s)}–{ru_date(d)}.",
                  admin_menu()); return
         label = f"{ru_date(s)}–{ru_date(d)}"
         update_state(user_id, awaiting='clear_period_final_confirm',
@@ -2007,23 +2490,22 @@ def handle_text(user_id, text):
                       payload=_p(cmd='clear_period_do'))
         kb.add_button('❌ Отмена', color=VkKeyboardColor.SECONDARY,
                       payload=_p(cmd='cancel'))
-        send(user_id, f"⚠️ Подтвердите удаление.\n\n"
-                      f"Период: {label}\n"
-                      f"Будет удалено отгрузок: {cnt}\n\n"
-                      f"Нажмите «Да, удалить» для подтверждения.", kb.get_keyboard())
+        send(user_id, f"⚠️ Период: {label}\nБудет удалено: {cnt}\n\nПодтвердите:",
+             kb.get_keyboard())
         return
 
     if awaiting == 'add_custom_date':
         d = parse_date(text)
         if not d:
-            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:", cancel_menu()); return
+            send(user_id, "❌ Введите ДД.ММ.ГГГГ:", cancel_menu()); return
         clear_state(user_id)
         set_state(user_id, pending={'date': d.isoformat()})
         show_client_picker(user_id, action='add')
+
     elif awaiting == 'new_client_name':
         name = text.strip()
         if not name:
-            send(user_id, "❌ Пустое имя. Введите ещё раз:", cancel_menu()); return
+            send(user_id, "❌ Пустое имя:", cancel_menu()); return
         action = state.get('action', 'add')
         sid = state.get('sid')
         if action == 'edit_client' and sid:
@@ -2038,6 +2520,7 @@ def handle_text(user_id, text):
             p['client'] = name
             update_state(user_id, awaiting='add_tonnage', pending=p)
             send(user_id, f"👤 {name}\nВведите тоннаж или выберите:", tonnage_menu())
+
     elif awaiting == 'add_tonnage':
         t = parse_number(text)
         if t is None or t <= 0:
@@ -2046,6 +2529,7 @@ def handle_text(user_id, text):
         p['tonnage'] = t
         update_state(user_id, awaiting=None, pending=p)
         show_confirm(user_id)
+
     elif awaiting == 'add_comment':
         comment = text.strip()
         if comment == '-': comment = ''
@@ -2053,6 +2537,7 @@ def handle_text(user_id, text):
         p['comment'] = comment
         update_state(user_id, awaiting=None, pending=p)
         show_confirm(user_id)
+
     elif awaiting == 'edit_tonnage':
         t = parse_number(text)
         if t is None or t <= 0:
@@ -2063,16 +2548,18 @@ def handle_text(user_id, text):
         s = get_shipment(sid)
         send(user_id, f"✅ Тоннаж изменён.\n\n{format_shipment_card(s)}",
              shipment_item_menu(sid, s['shipment_date'], allow_delete=is_admin(user_id)))
+
     elif awaiting == 'edit_date':
         d = parse_date(text)
         if not d:
-            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:", cancel_menu()); return
+            send(user_id, "❌ Введите ДД.ММ.ГГГГ:", cancel_menu()); return
         sid = state.get('sid')
         update_shipment(sid, shipment_date=d.isoformat(), user_id=user_id)
         clear_state(user_id)
         s = get_shipment(sid)
         send(user_id, f"✅ Дата изменена.\n\n{format_shipment_card(s)}",
              shipment_item_menu(sid, s['shipment_date'], allow_delete=is_admin(user_id)))
+
     elif awaiting == 'edit_comment':
         comment = text.strip()
         if comment == '-': comment = ''
@@ -2082,32 +2569,22 @@ def handle_text(user_id, text):
         s = get_shipment(sid)
         send(user_id, f"✅ Комментарий изменён.\n\n{format_shipment_card(s)}",
              shipment_item_menu(sid, s['shipment_date'], allow_delete=is_admin(user_id)))
+
     elif awaiting == 'stats_custom_start':
         d = parse_date(text)
         if not d:
-            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:", cancel_menu()); return
+            send(user_id, "❌ Введите ДД.ММ.ГГГГ:", cancel_menu()); return
         update_state(user_id, awaiting='stats_custom_end', stats_start=d.isoformat())
-        send(user_id, "Введите конечную дату (ДД.ММ.ГГГГ):", cancel_menu())
+        send(user_id, "Введите конечную дату:", cancel_menu())
+
     elif awaiting == 'stats_custom_end':
         d = parse_date(text)
         if not d:
-            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:", cancel_menu()); return
+            send(user_id, "❌ Введите ДД.ММ.ГГГГ:", cancel_menu()); return
         start = state.get('stats_start')
         clear_state(user_id)
         show_stats(user_id, period='custom', start=start, end=d.isoformat())
-    elif awaiting == 'chart_custom_start':
-        d = parse_date(text)
-        if not d:
-            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:", cancel_menu()); return
-        update_state(user_id, awaiting='chart_custom_end', chart_start=d.isoformat())
-        send(user_id, "Введите конечную дату (ДД.ММ.ГГГГ):", cancel_menu())
-    elif awaiting == 'chart_custom_end':
-        d = parse_date(text)
-        if not d:
-            send(user_id, "❌ Не понял дату. Введите ДД.ММ.ГГГГ:", cancel_menu()); return
-        start = state.get('chart_start')
-        clear_state(user_id)
-        show_chart(user_id, period='custom', start=start, end=d.isoformat())
+
     elif text == '➕ Добавить погрузку':
         start_add(user_id)
     elif text == '📋 Сегодня':
@@ -2118,10 +2595,12 @@ def handle_text(user_id, text):
         show_day_shipments(user_id, tz_today() + timedelta(days=1))
     elif text == '📅 Другая дата':
         update_state(user_id, awaiting='add_custom_date')
-        send(user_id, "Введите дату (ДД.ММ.ГГГГ). Можно: 'сегодня', 'завтра', 'послезавтра'.",
-             cancel_menu())
+        send(user_id, "Введите дату (ДД.ММ.ГГГГ):", cancel_menu())
     elif text == '📊 Статистика':
         send(user_id, "Выберите период:", stats_menu())
+    elif text == '📈 Графики':
+        clear_state(user_id)
+        send(user_id, "📈 Выберите график (все в формате А4):", charts_menu())
     elif text == '📁 Клиенты':
         show_clients_for_history(user_id)
     elif text == '❓ Помощь':
@@ -2162,7 +2641,6 @@ def morning_report_loop():
                             n.date(), shipments,
                             f"🌅 Доброе утро! Погрузки на сегодня ({ru_date(n.date())}):")
                         send(uid, text, main_menu(is_admin(uid)))
-
                         try:
                             png = make_day_image_png(n.date(), shipments)
                             attach = upload_photo_bytes(uid, png)
@@ -2173,12 +2651,9 @@ def morning_report_loop():
                                        f"{fmt_num(total_trucks)} фур")
                             send(uid, caption, main_menu(is_admin(uid)),
                                  attachment=attach)
-                        except Exception:
-                            traceback.print_exc()
-                    except Exception:
-                        traceback.print_exc()
-        except Exception:
-            traceback.print_exc()
+                        except Exception: traceback.print_exc()
+                    except Exception: traceback.print_exc()
+        except Exception: traceback.print_exc()
         time.sleep(60)
 
 
@@ -2197,14 +2672,12 @@ def backup_loop():
                 path = make_backup('auto')
                 _backup_last_day = today_key
                 if path: print(f"[backup] saved: {path} at {n}")
-        except Exception:
-            traceback.print_exc()
+        except Exception: traceback.print_exc()
         time.sleep(60)
 
 
 def _run_keepalive_server():
     port = int(os.getenv('PORT', '8080'))
-
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)
@@ -2212,7 +2685,6 @@ def _run_keepalive_server():
             self.end_headers()
             self.wfile.write(b'OK')
         def log_message(self, *args): pass
-
     try:
         server = HTTPServer(('0.0.0.0', port), Handler)
         print(f"[keepalive] listening on port {port}")
@@ -2251,8 +2723,7 @@ def _extract_attachments(event):
                         items = doc_info.get('items') or []
                         if items:
                             result.append({'type': 'doc', 'doc': items[0]})
-                except Exception:
-                    traceback.print_exc()
+                except Exception: traceback.print_exc()
             i += 1
         return result
     return []
@@ -2274,8 +2745,7 @@ def _collect_docs_for_import(event, user_id):
                     for a in (items[0].get('attachments') or []):
                         if isinstance(a, dict) and a.get('type') == 'doc':
                             docs.append(a)
-            except Exception:
-                traceback.print_exc()
+            except Exception: traceback.print_exc()
     return docs
 
 
