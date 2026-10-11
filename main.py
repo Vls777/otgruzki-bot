@@ -1012,7 +1012,7 @@ def _chart_period_bounds(period):
 # ════════════════════════════ КАРТИНКА ДНЯ (А4) ════════════════════════════
 
 def make_day_image_png(d, shipments):
-    fig = plt.figure(figsize=A4_PORTRAIT, dpi=150)
+    fig = plt.figure(figsize=A4_PORTRAIT, dpi=120)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis('off')
 
@@ -1039,7 +1039,7 @@ def make_day_image_png(d, shipments):
         ax.text(0.5, 0.5, '— нет погрузок —',
                 ha='center', va='center', fontsize=24, color='#aaa')
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', dpi=150, facecolor='white')
+        plt.savefig(buf, format='png', dpi=120, facecolor='white')
         plt.close(fig); buf.seek(0)
         return buf.read()
 
@@ -1099,7 +1099,7 @@ def make_day_image_png(d, shipments):
             ha='center', va='center', fontsize=8, color='#b0b8c2')
 
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=150, facecolor='white',
+    plt.savefig(buf, format='png', dpi=120, facecolor='white',
                 bbox_inches=None, pad_inches=0)
     plt.close(fig); buf.seek(0)
     return buf.read()
@@ -1126,7 +1126,7 @@ def show_day_image(user_id, d):
 
 def _save_fig_to_png(fig):
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=130, facecolor='white', bbox_inches=None)
+    plt.savefig(buf, format='png', dpi=110, facecolor='white', bbox_inches=None)
     plt.close(fig)
     buf.seek(0)
     return buf.read()
@@ -1145,7 +1145,7 @@ def make_chart_by_day_png(start, end, title):
     dates = sorted(by_day.keys())
     values = [by_day[d] for d in dates]
 
-    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=130)
+    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=110)
     ax = fig.add_axes([0.08, 0.15, 0.86, 0.72])
 
     bars = ax.bar(dates, values, color=COLOR_ACCENT, edgecolor='#2c4a70', width=0.7)
@@ -1184,7 +1184,7 @@ def make_top_clients_png(start, end, title):
     values = [c['tonnage'] for _, c in items]
     trucks = [c['trucks'] for _, c in items]
 
-    fig = plt.figure(figsize=A4_PORTRAIT, dpi=130)
+    fig = plt.figure(figsize=A4_PORTRAIT, dpi=110)
     ax = fig.add_axes([0.28, 0.08, 0.65, 0.83])
 
     bars = ax.barh(names, values, color=COLOR_ACCENT, edgecolor='#2c4a70')
@@ -1218,7 +1218,7 @@ def make_top_trucks_png(start, end, title):
     trucks = [c['trucks'] for _, c in items]
     tons = [c['tonnage'] for _, c in items]
 
-    fig = plt.figure(figsize=A4_PORTRAIT, dpi=130)
+    fig = plt.figure(figsize=A4_PORTRAIT, dpi=110)
     ax = fig.add_axes([0.28, 0.08, 0.65, 0.83])
 
     bars = ax.barh(names, trucks, color='#7a9cc6', edgecolor='#2c4a70')
@@ -1253,7 +1253,7 @@ def make_pie_clients_png(start, end, title):
         labels.append('Прочие')
         values.append(other_t)
 
-    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=130)
+    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=110)
     ax = fig.add_axes([0.05, 0.08, 0.9, 0.82])
 
     colors = plt.cm.tab10.colors[:len(values)]
@@ -1283,7 +1283,7 @@ def make_month_heatmap_png(year, month, title):
     max_t = max(by_day.values()) if by_day else 1.0
     n_weeks = len(weeks)
 
-    fig = plt.figure(figsize=A4_PORTRAIT, dpi=130)
+    fig = plt.figure(figsize=A4_PORTRAIT, dpi=110)
     ax = fig.add_axes([0.08, 0.14, 0.84, 0.72])
 
     days_header = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
@@ -1344,7 +1344,7 @@ def make_week_compare_png():
     labels = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
     x = list(range(7)); w = 0.38
 
-    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=130)
+    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=110)
     ax = fig.add_axes([0.08, 0.18, 0.86, 0.68])
 
     b1 = ax.bar([i - w/2 for i in x], last_week, w,
@@ -1391,7 +1391,7 @@ def make_client_trend_png(client_name):
     d_objs = [datetime.strptime(d, '%Y-%m-%d').date() for d in dates]
     values = [by_date[d] for d in dates]
 
-    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=130)
+    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=110)
     ax = fig.add_axes([0.08, 0.18, 0.86, 0.66])
 
     ax.plot(d_objs, values, marker='o', color=COLOR_ACCENT,
@@ -1426,7 +1426,7 @@ def make_weekday_avg_png(start, end, title):
     labels = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
     x = list(range(7))
 
-    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=130)
+    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=110)
     ax = fig.add_axes([0.08, 0.18, 0.86, 0.68])
 
     bars = ax.bar(x, totals, color=COLOR_ACCENT, edgecolor='#2c4a70', width=0.65)
@@ -1463,7 +1463,7 @@ def make_weekend_pie_png(start, end, title):
             weekday_t += c['tonnage']
     if weekday_t == 0 and weekend_t == 0: return None
 
-    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=130)
+    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=110)
     ax = fig.add_axes([0.05, 0.08, 0.9, 0.82])
 
     values = [weekday_t, weekend_t]
@@ -1519,7 +1519,6 @@ def show_chart(user_id, chart, period):
     s, e, ptitle = _chart_period_bounds(period)
     if not s:
         send(user_id, "Не понял период.", main_menu(is_admin(user_id))); return
-    s_iso, e_iso = s.isoformat(), e.isoformat()
 
     if chart == 'by_day':
         png = make_chart_by_day_png(s, e, ptitle)
@@ -1579,262 +1578,96 @@ def show_calendar_chart_custom(user_id, year, month):
     _send_chart(user_id, png, f"📅 Календарь — {calendar.month_name[month]} {year}")
 
 
-# ════════════════════════════ ИМПОРТ ════════════════════════════
+# ════════════════════════════ ЗАГРУЗКА В ВК (НОВАЯ ВЕРСИЯ) ════════════════════════════
 
-def _split_line(line):
-    if '\t' in line: return [p.strip() for p in line.split('\t')]
-    if '|' in line: return [p.strip() for p in line.split('|')]
-    if ';' in line: return [p.strip() for p in line.split(';')]
-    if ',' in line: return [p.strip() for p in line.split(',')]
-    parts = re.split(r'\s{2,}', line)
-    if len(parts) >= 3: return [p.strip() for p in parts]
-    return [p.strip() for p in line.split()]
-
-
-def import_from_text(user_id, text):
-    lines = [ln for ln in text.splitlines() if ln.strip()]
-    if not lines: return 0, 0, ["Пустое сообщение"]
-    first_low = lines[0].lower()
-    has_header = ('клиент' in first_low or 'контрагент' in first_low or
-                  'дата' in first_low or 'тонн' in first_low)
-    imported = skipped = 0
-    errors = []
-    start_idx = 1 if has_header else 0
-    for rn, line in enumerate(lines[start_idx:], start=start_idx + 1):
-        try:
-            parts = _split_line(line)
-            if len(parts) < 3:
-                errors.append(f"Строка {rn}: нужно 3 колонки"); skipped += 1; continue
-            client = parts[0].strip()
-            date_str = parts[1].strip()
-            tonnage_str = parts[2].strip().replace(',', '.').replace(' ', '')
-            if not client or not tonnage_str:
-                skipped += 1; continue
-            d = parse_month_or_date(date_str)
-            if not d:
-                errors.append(f"Строка {rn}: не понял дату '{date_str}'"); skipped += 1; continue
-            tonnage = float(tonnage_str)
-            if tonnage <= 0: raise ValueError("тоннаж <= 0")
-            add_shipment(client, tonnage, d.isoformat(), user_id, comment='импорт')
-            imported += 1
-        except Exception as e:
-            errors.append(f"Строка {rn}: {e}"); skipped += 1
-    return imported, skipped, errors
-
-
-def _import_simple_rows(user_id, rows):
-    if not rows or len(rows) < 2:
-        return 0, 0, ["Нужна хотя бы одна строка данных"]
-    header = [str(h or '').strip().lower() for h in rows[0]]
-    idx_client = idx_date = idx_tonnage = None
-    for i, h in enumerate(header):
-        if idx_client is None and ('клиент' in h or 'контрагент' in h or
-                                    'наименование' in h or h == 'client'):
-            idx_client = i
-        elif idx_date is None and ('дата' in h or 'месяц' in h or
-                                    'период' in h or h in ('date', 'month')):
-            idx_date = i
-        elif idx_tonnage is None and ('тонн' in h or 'вес' in h or
-                                       'масса' in h or h in ('tonnage', 'weight')):
-            idx_tonnage = i
-    if idx_client is None or idx_date is None or idx_tonnage is None:
-        if len(header) >= 3:
-            idx_client, idx_date, idx_tonnage = 0, 1, 2
-        else:
-            return 0, 0, ["Не удалось определить колонки"]
-    imported = skipped = 0
-    errors = []
-    for rn, r in enumerate(rows[1:], start=2):
-        try:
-            if r is None or len(r) <= max(idx_client, idx_date, idx_tonnage):
-                skipped += 1; continue
-            def _cell(v):
-                if v is None: return ''
-                if isinstance(v, datetime): return v
-                return str(v).strip()
-            client = _cell(r[idx_client])
-            date_raw = r[idx_date]
-            tonnage_raw = _cell(r[idx_tonnage]).replace(',', '.').replace(' ', '')
-            if not client or tonnage_raw == '':
-                skipped += 1; continue
-            if isinstance(date_raw, datetime): d = date_raw.date()
-            elif isinstance(date_raw, date): d = date_raw
-            else: d = parse_month_or_date(_cell(date_raw))
-            if not d:
-                errors.append(f"Строка {rn}: не понял дату"); skipped += 1; continue
-            tonnage = float(tonnage_raw)
-            if tonnage <= 0: raise ValueError("тоннаж <= 0")
-            add_shipment(client, tonnage, d.isoformat(), user_id, comment='импорт')
-            imported += 1
-        except Exception as e:
-            errors.append(f"Строка {rn}: {e}"); skipped += 1
-    return imported, skipped, errors
-
-
-def import_1c_data(user_id, rows):
-    n = len(rows)
-    imported = skipped = 0
-    errors = []
-    samples = []
-    date_re = re.compile(r'от\s+(\d{2}\.\d{2}\.\d{4})')
-
-    service_prefixes = (
-        'выполнение сборки', 'параметры', 'отбор',
-        'склад', 'получатель', 'регистратор', 'артикул', 'итого',
-    )
-
-    for idx, row in enumerate(rows):
-        rn = idx + 1
-        try:
-            if not row: continue
-            r = list(row)
-            if len(r) < 8: r = r + [None] * (8 - len(r))
-            a = r[0]
-            h = r[7] if len(r) > 7 else None
-
-            a_str = str(a).strip() if a is not None else ''
-            if not a_str: continue
-            a_low = a_str.lower()
-
-            if any(a_low.startswith(p) for p in service_prefixes): continue
-            if 'расходный ордер' in a_low: continue
-            if a_low.startswith('акт с/м'): continue
-            if a_str.replace('.', '').replace(',', '').replace(' ', '').isdigit():
-                continue
-
-            weight_cell = h
-            if weight_cell is None or str(weight_cell).strip() == '':
-                for cell in reversed(r):
-                    if cell is None: continue
-                    s = str(cell).replace(',', '.').replace(' ', '').strip()
-                    if s and re.match(r'^\d+(\.\d+)?$', s):
-                        weight_cell = cell; break
-
-            if weight_cell is None: skipped += 1; continue
-            g_str = str(weight_cell).replace(',', '.').replace(' ', '').strip()
-            if not g_str: skipped += 1; continue
-            try: weight_kg = float(g_str)
-            except ValueError: skipped += 1; continue
-            if weight_kg <= 0: skipped += 1; continue
-            weight_t = round(weight_kg / 1000.0, 3)
-
-            shipment_date = None
-            j = idx + 1
-            while j < n:
-                rj = rows[j]
-                if not rj: j += 1; continue
-                aj = str(rj[0]).strip() if rj[0] is not None else ''
-                aj_low = aj.lower()
-                if 'расходный ордер' in aj_low:
-                    m = date_re.search(aj)
-                    if m:
-                        try:
-                            shipment_date = datetime.strptime(
-                                m.group(1), '%d.%m.%Y').date()
-                        except ValueError: pass
-                    break
-                if aj and not aj.replace('.', '').replace(',', '').replace(' ', '').isdigit():
-                    if not any(aj_low.startswith(p) for p in service_prefixes):
-                        if 'расходный ордер' not in aj_low and not aj_low.startswith('акт с/м'):
-                            break
-                j += 1
-
-            if not shipment_date:
-                shipment_date = tz_today()
-
-            add_shipment(a_str, weight_t, shipment_date.isoformat(),
-                         user_id, comment='1С')
-            if len(samples) < 15:
-                samples.append(f"{a_str[:55]} | {shipment_date.isoformat()} | "
-                               f"{weight_kg} кг → {weight_t} т")
-            imported += 1
-        except Exception as e:
-            errors.append(f"Строка {rn}: {e}"); skipped += 1
-
-    if samples:
-        try:
-            send(user_id, "📋 Примеры импортированных:\n" +
-                 "\n".join(f"• {s}" for s in samples))
-        except Exception: traceback.print_exc()
-    return imported, skipped, errors
-
-
-def import_csv_data(user_id, data_bytes, filename=''):
-    name = (filename or '').lower()
-    if name.endswith('.xlsx') or name.endswith('.xlsm'):
-        try:
-            from openpyxl import load_workbook
-        except ImportError:
-            return 0, 0, ["Библиотека openpyxl не установлена"]
-        try:
-            wb = load_workbook(io.BytesIO(data_bytes), data_only=True)
-            ws = wb.active
-            rows = [list(r) for r in ws.iter_rows(values_only=True)]
-        except Exception as e:
-            return 0, 0, [f"Не удалось прочитать Excel: {e}"]
-        for r in rows[:300]:
-            if r and r[0] and 'расходный ордер' in str(r[0]).lower():
-                return import_1c_data(user_id, rows)
-        return _import_simple_rows(user_id, rows)
-    return 0, 0, ["Неподдерживаемый формат файла"]
-
-
-def handle_csv_attachment(user_id, attachments):
-    try: make_backup('before-import')
-    except Exception: traceback.print_exc()
-
-    for att in attachments:
-        if att.get('type') != 'doc': continue
-        doc = att.get('doc') or {}
-        url = doc.get('url')
-        filename = doc.get('title', '')
-        if not url: continue
-        send(user_id, f"📥 Скачиваю файл: {filename}")
-        try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=180) as resp:
-                data = resp.read()
-        except Exception as e:
-            send(user_id, f"❌ Не удалось скачать файл: {e}")
-            clear_state(user_id); return
-        send(user_id, "⚙️ Обрабатываю файл (может занять до минуты)...")
-        imported, skipped, errors = import_csv_data(user_id, data, filename)
-        clear_state(user_id)
-        result = [f"📥 Импорт завершён:", f"• Добавлено: {imported}"]
-        if skipped: result.append(f"• Пропущено: {skipped}")
-        if errors:
-            result.append(""); result.append("Примеры ошибок:")
-            result.extend(errors[:5])
-        result.append(""); result.append("Проверьте: 📊 Статистика → Этот год")
-        send(user_id, "\n".join(result), admin_menu())
-        return
-    send(user_id, "❌ Во вложении не найден файл.", admin_menu())
-    clear_state(user_id)
-
-
-# ════════════════════════════ ЗАГРУЗКА ФАЙЛОВ В ВК (НОВАЯ ВЕРСИЯ) ════════════════════════════
-
-def upload_csv_doc(user_id, data, filename):
-    """Загружает документ в ВК через прямой API."""
+def upload_photo_bytes(user_id, photo_bytes):
+    """
+    Загружает фото в ВК через прямой requests.
+    Уменьшает до 1000 px по длинной стороне, quality=75.
+    """
+    # 1. Конвертация и уменьшение
+    jpg_bytes = photo_bytes
     try:
-        server_resp = vk.docs.getMessagesUploadServer(type='doc', peer_id=user_id)
-        upload_url = server_resp['upload_url']
+        from PIL import Image
+        img = Image.open(io.BytesIO(photo_bytes))
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        max_dim = 1000
+        if max(img.size) > max_dim:
+            img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        jpg_buf = io.BytesIO()
+        img.save(jpg_buf, 'JPEG', quality=75, optimize=True)
+        jpg_bytes = jpg_buf.getvalue()
+        print(f"[upload_photo] JPEG: {img.size}, {len(jpg_bytes)} bytes")
     except Exception as e:
-        print(f"[upload_doc] getMessagesUploadServer failed: {e}")
+        print(f"[upload_photo] PIL failed: {e}")
+        traceback.print_exc()
+
+    # 2. Получаем сервер загрузки
+    try:
+        server_resp = vk.photos.getMessagesUploadServer(peer_id=user_id)
+        upload_url = server_resp['upload_url']
+        print(f"[upload_photo] upload_url получен")
+    except Exception as e:
+        print(f"[upload_photo] getMessagesUploadServer failed: {e}")
         traceback.print_exc()
         raise
 
+    # 3. Загружаем через requests
+    try:
+        files = {'photo': ('image.jpg', jpg_bytes, 'image/jpeg')}
+        r = requests.post(upload_url, files=files, timeout=60)
+        print(f"[upload_photo] status={r.status_code}, body={r.text[:200]}")
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+        if not r.text.strip():
+            raise RuntimeError("Пустой ответ от сервера ВК")
+        uploaded = r.json()
+    except Exception as e:
+        print(f"[upload_photo] POST failed: {e}")
+        traceback.print_exc()
+        raise
+
+    if not uploaded.get('photo'):
+        raise RuntimeError(f"ВК вернул пустое photo: {uploaded}")
+
+    # 4. Сохраняем
+    try:
+        photo_list = vk.photos.saveMessagesPhoto(
+            photo=uploaded['photo'],
+            server=uploaded['server'],
+            hash=uploaded['hash'])
+        print(f"[upload_photo] saveMessagesPhoto: {str(photo_list)[:200]}")
+    except Exception as e:
+        print(f"[upload_photo] saveMessagesPhoto failed: {e}")
+        traceback.print_exc()
+        raise
+
+    if not photo_list or not photo_list[0].get('id'):
+        raise RuntimeError(f"saveMessagesPhoto вернул пусто: {photo_list}")
+
+    return f"photo{photo_list[0]['owner_id']}_{photo_list[0]['id']}"
+
+
+def upload_csv_doc(user_id, data, filename):
+    """Загружает документ в ВК через прямой API."""
+    server_resp = vk.docs.getMessagesUploadServer(type='doc', peer_id=user_id)
+    upload_url = server_resp['upload_url']
+
     files = {'file': (filename, data, 'application/octet-stream')}
     r = requests.post(upload_url, files=files, timeout=120)
-    uploaded = r.json()
-    print(f"[upload_doc] uploaded: {str(uploaded)[:200]}")
+    print(f"[upload_doc] status={r.status_code}, body={r.text[:200]}")
 
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+    if not r.text.strip():
+        raise RuntimeError("Пустой ответ от сервера ВК")
+
+    uploaded = r.json()
     if not uploaded.get('file'):
         raise RuntimeError(f"VK upload failed: {uploaded}")
 
     saved = vk.docs.save(file=uploaded['file'], title=filename)
-    print(f"[upload_doc] saved: {str(saved)[:200]}")
-
     if isinstance(saved, dict) and 'doc' in saved:
         doc_info = saved['doc']
     elif isinstance(saved, dict) and saved.get('id'):
@@ -1843,58 +1676,6 @@ def upload_csv_doc(user_id, data, filename):
         raise RuntimeError(f"docs.save unexpected: {saved}")
 
     return f"doc{doc_info['owner_id']}_{doc_info['id']}"
-
-
-def upload_photo_bytes(user_id, photo_bytes):
-    """Загружает фото в ВК через прямой API. Конвертирует в JPEG."""
-    # 1. Конвертация в JPEG с уменьшением
-    try:
-        from PIL import Image
-        img = Image.open(io.BytesIO(photo_bytes))
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
-        max_dim = 1400
-        if max(img.size) > max_dim:
-            img.thumbnail((max_dim, max_dim), Image.LANCZOS)
-        jpg_buf = io.BytesIO()
-        img.save(jpg_buf, 'JPEG', quality=85, optimize=True)
-        jpg_bytes = jpg_buf.getvalue()
-        print(f"[upload_photo] JPEG: {img.size}, {len(jpg_bytes)} bytes")
-    except Exception as e:
-        print(f"[upload_photo] PIL failed: {e}")
-        traceback.print_exc()
-        jpg_bytes = photo_bytes
-
-    # 2. Сервер загрузки
-    try:
-        server_resp = vk.photos.getMessagesUploadServer(peer_id=user_id)
-        upload_url = server_resp['upload_url']
-        print(f"[upload_photo] got upload_url")
-    except Exception as e:
-        print(f"[upload_photo] getMessagesUploadServer failed: {e}")
-        traceback.print_exc()
-        raise
-
-    # 3. Загрузка через requests
-    files = {'photo': ('image.jpg', jpg_bytes, 'image/jpeg')}
-    r = requests.post(upload_url, files=files, timeout=60)
-    uploaded = r.json()
-    print(f"[upload_photo] uploaded: {str(uploaded)[:200]}")
-
-    if not uploaded.get('photo'):
-        raise RuntimeError(f"VK photo upload returned empty: {uploaded}")
-
-    # 4. Сохранить
-    photo_list = vk.photos.saveMessagesPhoto(
-        photo=uploaded['photo'],
-        server=uploaded['server'],
-        hash=uploaded['hash'])
-    print(f"[upload_photo] saveMessagesPhoto: {str(photo_list)[:200]}")
-
-    if not photo_list or not photo_list[0].get('id'):
-        raise RuntimeError(f"saveMessagesPhoto returned empty: {photo_list}")
-
-    return f"photo{photo_list[0]['owner_id']}_{photo_list[0]['id']}"
 
 
 def on_export_csv(user_id, days=30):
