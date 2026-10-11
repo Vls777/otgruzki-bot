@@ -1578,12 +1578,12 @@ def show_calendar_chart_custom(user_id, year, month):
     _send_chart(user_id, png, f"📅 Календарь — {calendar.month_name[month]} {year}")
 
 
-# ════════════════════════════ ЗАГРУЗКА В ВК (НОВАЯ ВЕРСИЯ) ════════════════════════════
+# ════════════════════════════ ЗАГРУЗКА В ВК (С 3 ПОПЫТКАМИ) ════════════════════════════
 
 def upload_photo_bytes(user_id, photo_bytes):
     """
     Загружает фото в ВК через requests.
-    Уменьшение до 800 px, quality=70, без явного content-type.
+    Уменьшение до 800 px, quality=70, с 3 попытками при 5xx.
     """
     # 1. Конвертация и уменьшение
     jpg_bytes = photo_bytes
@@ -1613,72 +1613,80 @@ def upload_photo_bytes(user_id, photo_bytes):
         traceback.print_exc()
         raise
 
-    # 3. Отправка multipart
-    try:
-        files = {'photo': ('photo.jpg', jpg_bytes)}
-        r = requests.post(upload_url, files=files, timeout=60,
-                          headers={'User-Agent': 'VKAndroidApp/5.52-4543'})
-        print(f"[upload_photo] status={r.status_code}, body={r.text[:300]}")
+    # 3. Отправка multipart с 3 попытками
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            files = {'photo': ('photo.jpg', jpg_bytes)}
+            r = requests.post(upload_url, files=files, timeout=90,
+                              headers={'User-Agent': 'VKAndroidApp/5.52-4543'})
+            print(f"[upload_photo] попытка {attempt}: "
+                  f"status={r.status_code}, body={r.text[:200]}")
 
-        if r.status_code != 200:
-            raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
-        if not r.text.strip():
-            raise RuntimeError("Пустой ответ от ВК")
+            if r.status_code == 200 and r.text.strip():
+                uploaded = r.json()
+                if uploaded.get('photo'):
+                    # 4. Сохранение
+                    photo_list = vk.photos.saveMessagesPhoto(
+                        photo=uploaded['photo'],
+                        server=uploaded['server'],
+                        hash=uploaded['hash'])
+                    if photo_list and photo_list[0].get('id'):
+                        print(f"[upload_photo] успех с попытки {attempt}")
+                        return f"photo{photo_list[0]['owner_id']}_{photo_list[0]['id']}"
+                last_error = f"Ответ без photo: {uploaded}"
+            else:
+                last_error = f"HTTP {r.status_code}: {r.text[:100]}"
 
-        uploaded = r.json()
-    except Exception as e:
-        print(f"[upload_photo] POST failed: {e}")
-        traceback.print_exc()
-        raise
+            if attempt < 3:
+                print(f"[upload_photo] повтор через 3 сек...")
+                time.sleep(3)
 
-    if not uploaded.get('photo'):
-        raise RuntimeError(f"ВК вернул пустой photo: {uploaded}")
+        except Exception as e:
+            last_error = str(e)
+            print(f"[upload_photo] попытка {attempt} упала: {e}")
+            if attempt < 3:
+                time.sleep(3)
 
-    # 4. Сохранение
-    try:
-        photo_list = vk.photos.saveMessagesPhoto(
-            photo=uploaded['photo'],
-            server=uploaded['server'],
-            hash=uploaded['hash'])
-        print(f"[upload_photo] saveMessagesPhoto OK")
-    except Exception as e:
-        print(f"[upload_photo] saveMessagesPhoto failed: {e}")
-        traceback.print_exc()
-        raise
-
-    if not photo_list or not photo_list[0].get('id'):
-        raise RuntimeError(f"saveMessagesPhoto вернул пусто")
-
-    return f"photo{photo_list[0]['owner_id']}_{photo_list[0]['id']}"
+    raise RuntimeError(f"Не удалось за 3 попытки. Последняя ошибка: {last_error}")
 
 
 def upload_csv_doc(user_id, data, filename):
-    """Загружает документ в ВК через прямой API."""
-    server_resp = vk.docs.getMessagesUploadServer(type='doc', peer_id=user_id)
-    upload_url = server_resp['upload_url']
+    """Загружает документ в ВК через прямой API с 3 попытками."""
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            server_resp = vk.docs.getMessagesUploadServer(type='doc', peer_id=user_id)
+            upload_url = server_resp['upload_url']
 
-    files = {'file': (filename, data, 'application/octet-stream')}
-    r = requests.post(upload_url, files=files, timeout=120)
-    print(f"[upload_doc] status={r.status_code}, body={r.text[:200]}")
+            files = {'file': (filename, data, 'application/octet-stream')}
+            r = requests.post(upload_url, files=files, timeout=120)
+            print(f"[upload_doc] попытка {attempt}: "
+                  f"status={r.status_code}, body={r.text[:200]}")
 
-    if r.status_code != 200:
-        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
-    if not r.text.strip():
-        raise RuntimeError("Пустой ответ от сервера ВК")
+            if r.status_code == 200 and r.text.strip():
+                uploaded = r.json()
+                if uploaded.get('file'):
+                    saved = vk.docs.save(file=uploaded['file'], title=filename)
+                    if isinstance(saved, dict) and 'doc' in saved:
+                        doc_info = saved['doc']
+                    elif isinstance(saved, dict) and saved.get('id'):
+                        doc_info = saved
+                    else:
+                        last_error = f"docs.save unexpected: {saved}"
+                        continue
+                    return f"doc{doc_info['owner_id']}_{doc_info['id']}"
+            last_error = f"HTTP {r.status_code}: {r.text[:100]}"
 
-    uploaded = r.json()
-    if not uploaded.get('file'):
-        raise RuntimeError(f"VK upload failed: {uploaded}")
+            if attempt < 3:
+                time.sleep(3)
 
-    saved = vk.docs.save(file=uploaded['file'], title=filename)
-    if isinstance(saved, dict) and 'doc' in saved:
-        doc_info = saved['doc']
-    elif isinstance(saved, dict) and saved.get('id'):
-        doc_info = saved
-    else:
-        raise RuntimeError(f"docs.save unexpected: {saved}")
+        except Exception as e:
+            last_error = str(e)
+            if attempt < 3:
+                time.sleep(3)
 
-    return f"doc{doc_info['owner_id']}_{doc_info['id']}"
+    raise RuntimeError(f"Не удалось за 3 попытки. Последняя ошибка: {last_error}")
 
 
 def on_export_csv(user_id, days=30):
