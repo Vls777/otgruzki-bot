@@ -1012,7 +1012,7 @@ def _chart_period_bounds(period):
 # ════════════════════════════ КАРТИНКА ДНЯ (А4) ════════════════════════════
 
 def make_day_image_png(d, shipments):
-    fig = plt.figure(figsize=A4_PORTRAIT, dpi=120)
+    fig = plt.figure(figsize=A4_PORTRAIT, dpi=110)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis('off')
 
@@ -1039,7 +1039,7 @@ def make_day_image_png(d, shipments):
         ax.text(0.5, 0.5, '— нет погрузок —',
                 ha='center', va='center', fontsize=24, color='#aaa')
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', dpi=120, facecolor='white')
+        plt.savefig(buf, format='png', dpi=110, facecolor='white')
         plt.close(fig); buf.seek(0)
         return buf.read()
 
@@ -1099,7 +1099,7 @@ def make_day_image_png(d, shipments):
             ha='center', va='center', fontsize=8, color='#b0b8c2')
 
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=120, facecolor='white',
+    plt.savefig(buf, format='png', dpi=110, facecolor='white',
                 bbox_inches=None, pad_inches=0)
     plt.close(fig); buf.seek(0)
     return buf.read()
@@ -1126,7 +1126,7 @@ def show_day_image(user_id, d):
 
 def _save_fig_to_png(fig):
     buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=110, facecolor='white', bbox_inches=None)
+    plt.savefig(buf, format='png', dpi=100, facecolor='white', bbox_inches=None)
     plt.close(fig)
     buf.seek(0)
     return buf.read()
@@ -1145,7 +1145,7 @@ def make_chart_by_day_png(start, end, title):
     dates = sorted(by_day.keys())
     values = [by_day[d] for d in dates]
 
-    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=110)
+    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=100)
     ax = fig.add_axes([0.08, 0.15, 0.86, 0.72])
 
     bars = ax.bar(dates, values, color=COLOR_ACCENT, edgecolor='#2c4a70', width=0.7)
@@ -1184,7 +1184,7 @@ def make_top_clients_png(start, end, title):
     values = [c['tonnage'] for _, c in items]
     trucks = [c['trucks'] for _, c in items]
 
-    fig = plt.figure(figsize=A4_PORTRAIT, dpi=110)
+    fig = plt.figure(figsize=A4_PORTRAIT, dpi=100)
     ax = fig.add_axes([0.28, 0.08, 0.65, 0.83])
 
     bars = ax.barh(names, values, color=COLOR_ACCENT, edgecolor='#2c4a70')
@@ -1218,7 +1218,7 @@ def make_top_trucks_png(start, end, title):
     trucks = [c['trucks'] for _, c in items]
     tons = [c['tonnage'] for _, c in items]
 
-    fig = plt.figure(figsize=A4_PORTRAIT, dpi=110)
+    fig = plt.figure(figsize=A4_PORTRAIT, dpi=100)
     ax = fig.add_axes([0.28, 0.08, 0.65, 0.83])
 
     bars = ax.barh(names, trucks, color='#7a9cc6', edgecolor='#2c4a70')
@@ -1253,7 +1253,7 @@ def make_pie_clients_png(start, end, title):
         labels.append('Прочие')
         values.append(other_t)
 
-    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=110)
+    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=100)
     ax = fig.add_axes([0.05, 0.08, 0.9, 0.82])
 
     colors = plt.cm.tab10.colors[:len(values)]
@@ -1283,7 +1283,7 @@ def make_month_heatmap_png(year, month, title):
     max_t = max(by_day.values()) if by_day else 1.0
     n_weeks = len(weeks)
 
-    fig = plt.figure(figsize=A4_PORTRAIT, dpi=110)
+    fig = plt.figure(figsize=A4_PORTRAIT, dpi=100)
     ax = fig.add_axes([0.08, 0.14, 0.84, 0.72])
 
     days_header = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
@@ -1344,7 +1344,7 @@ def make_week_compare_png():
     labels = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
     x = list(range(7)); w = 0.38
 
-    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=110)
+    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=100)
     ax = fig.add_axes([0.08, 0.18, 0.86, 0.68])
 
     b1 = ax.bar([i - w/2 for i in x], last_week, w,
@@ -1391,7 +1391,7 @@ def make_client_trend_png(client_name):
     d_objs = [datetime.strptime(d, '%Y-%m-%d').date() for d in dates]
     values = [by_date[d] for d in dates]
 
-    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=110)
+    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=100)
     ax = fig.add_axes([0.08, 0.18, 0.86, 0.66])
 
     ax.plot(d_objs, values, marker='o', color=COLOR_ACCENT,
@@ -1426,7 +1426,7 @@ def make_weekday_avg_png(start, end, title):
     labels = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
     x = list(range(7))
 
-    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=110)
+    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=100)
     ax = fig.add_axes([0.08, 0.18, 0.86, 0.68])
 
     bars = ax.bar(x, totals, color=COLOR_ACCENT, edgecolor='#2c4a70', width=0.65)
@@ -1463,7 +1463,7 @@ def make_weekend_pie_png(start, end, title):
             weekday_t += c['tonnage']
     if weekday_t == 0 and weekend_t == 0: return None
 
-    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=110)
+    fig = plt.figure(figsize=A4_LANDSCAPE, dpi=100)
     ax = fig.add_axes([0.05, 0.08, 0.9, 0.82])
 
     values = [weekday_t, weekend_t]
@@ -1582,8 +1582,8 @@ def show_calendar_chart_custom(user_id, year, month):
 
 def upload_photo_bytes(user_id, photo_bytes):
     """
-    Загружает фото в ВК через прямой requests.
-    Уменьшает до 1000 px по длинной стороне, quality=75.
+    Загружает фото в ВК через requests.
+    Уменьшение до 800 px, quality=70, без явного content-type.
     """
     # 1. Конвертация и уменьшение
     jpg_bytes = photo_bytes
@@ -1592,18 +1592,18 @@ def upload_photo_bytes(user_id, photo_bytes):
         img = Image.open(io.BytesIO(photo_bytes))
         if img.mode != 'RGB':
             img = img.convert('RGB')
-        max_dim = 1000
+        max_dim = 800
         if max(img.size) > max_dim:
             img.thumbnail((max_dim, max_dim), Image.LANCZOS)
         jpg_buf = io.BytesIO()
-        img.save(jpg_buf, 'JPEG', quality=75, optimize=True)
+        img.save(jpg_buf, 'JPEG', quality=70, optimize=True)
         jpg_bytes = jpg_buf.getvalue()
         print(f"[upload_photo] JPEG: {img.size}, {len(jpg_bytes)} bytes")
     except Exception as e:
         print(f"[upload_photo] PIL failed: {e}")
         traceback.print_exc()
 
-    # 2. Получаем сервер загрузки
+    # 2. Сервер загрузки
     try:
         server_resp = vk.photos.getMessagesUploadServer(peer_id=user_id)
         upload_url = server_resp['upload_url']
@@ -1613,15 +1613,18 @@ def upload_photo_bytes(user_id, photo_bytes):
         traceback.print_exc()
         raise
 
-    # 3. Загружаем через requests
+    # 3. Отправка multipart
     try:
-        files = {'photo': ('image.jpg', jpg_bytes, 'image/jpeg')}
-        r = requests.post(upload_url, files=files, timeout=60)
-        print(f"[upload_photo] status={r.status_code}, body={r.text[:200]}")
+        files = {'photo': ('photo.jpg', jpg_bytes)}
+        r = requests.post(upload_url, files=files, timeout=60,
+                          headers={'User-Agent': 'VKAndroidApp/5.52-4543'})
+        print(f"[upload_photo] status={r.status_code}, body={r.text[:300]}")
+
         if r.status_code != 200:
             raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
         if not r.text.strip():
-            raise RuntimeError("Пустой ответ от сервера ВК")
+            raise RuntimeError("Пустой ответ от ВК")
+
         uploaded = r.json()
     except Exception as e:
         print(f"[upload_photo] POST failed: {e}")
@@ -1629,22 +1632,22 @@ def upload_photo_bytes(user_id, photo_bytes):
         raise
 
     if not uploaded.get('photo'):
-        raise RuntimeError(f"ВК вернул пустое photo: {uploaded}")
+        raise RuntimeError(f"ВК вернул пустой photo: {uploaded}")
 
-    # 4. Сохраняем
+    # 4. Сохранение
     try:
         photo_list = vk.photos.saveMessagesPhoto(
             photo=uploaded['photo'],
             server=uploaded['server'],
             hash=uploaded['hash'])
-        print(f"[upload_photo] saveMessagesPhoto: {str(photo_list)[:200]}")
+        print(f"[upload_photo] saveMessagesPhoto OK")
     except Exception as e:
         print(f"[upload_photo] saveMessagesPhoto failed: {e}")
         traceback.print_exc()
         raise
 
     if not photo_list or not photo_list[0].get('id'):
-        raise RuntimeError(f"saveMessagesPhoto вернул пусто: {photo_list}")
+        raise RuntimeError(f"saveMessagesPhoto вернул пусто")
 
     return f"photo{photo_list[0]['owner_id']}_{photo_list[0]['id']}"
 
