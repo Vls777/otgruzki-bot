@@ -14,6 +14,7 @@ import calendar
 import urllib.request
 import traceback
 import threading
+import logging
 import requests
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from contextlib import contextmanager
@@ -47,9 +48,10 @@ BACKUP_HOUR = 23
 BACKUP_MINUTE = 0
 BACKUP_KEEP = 60
 
-DATA_DIR = '/app/data'
+DATA_DIR = os.getenv('DATA_DIR', '/app/data')
 DB_PATH = os.path.join(DATA_DIR, 'shipments.db')
 BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
+LOG_PATH = os.path.join(DATA_DIR, 'bot.log')
 
 TZ = timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))
 
@@ -61,18 +63,76 @@ COLOR_ACCENT = '#4a76a8'
 COLOR_LIGHT = '#e8eef6'
 COLOR_GRID = '#d0d9e4'
 
+# Предкомпилированные regex
+DATE_RE = re.compile(r'от\s+(\d{2}\.\d{2}\.\d{4})')
+NUM_RE = re.compile(r'^\d+(\.\d+)?$')
+
+# TTL для состояния (30 минут)
+STATE_TTL_SECONDS = 1800
+# Кэш статистики (60 секунд)
+STATS_CACHE_SECONDS = 60
+
 
 def tz_now(): return datetime.now(TZ)
 def tz_today(): return tz_now().date()
 def now_iso(): return tz_now().strftime('%Y-%m-%d %H:%M:%S')
 
 
+# ════════════════════════════ ЛОГИРОВАНИЕ ════════════════════════════
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_PATH, encoding='utf-8'),
+        logging.StreamHandler(),
+    ]
+)
+log = logging.getLogger(__name__)
+
+
+# ════════════════════════════ СОСТОЯНИЯ ════════════════════════════
+
 _states = {}
-def set_state(user_id, **kw): _states[user_id] = kw
+_states_lock = threading.Lock()
+
+
+def set_state(user_id, **kw):
+    with _states_lock:
+        kw['_ts'] = time.time()
+        _states[user_id] = kw
+
+
 def update_state(user_id, **kw):
-    s = _states.setdefault(user_id, {}); s.update(kw); return s
-def get_state(user_id): return dict(_states.get(user_id, {}))
-def clear_state(user_id): _states.pop(user_id, None)
+    with _states_lock:
+        s = _states.setdefault(user_id, {})
+        s.update(kw)
+        s['_ts'] = time.time()
+        return s
+
+
+def get_state(user_id):
+    with _states_lock:
+        return dict(_states.get(user_id, {}))
+
+
+def clear_state(user_id):
+    with _states_lock:
+        _states.pop(user_id, None)
+
+
+def cleanup_states():
+    """Удаляет состояния старше TTL."""
+    now = time.time()
+    with _states_lock:
+        expired = [uid for uid, s in _states.items()
+                   if now - s.get('_ts', 0) > STATE_TTL_SECONDS]
+        for uid in expired:
+            del _states[uid]
+    if expired:
+        log.info(f"[states] Очищено залипших состояний: {len(expired)}")
 
 
 # ════════════════════════════ БАЗА ДАННЫХ ════════════════════════════
@@ -214,11 +274,13 @@ def update_shipment(shipment_id, client_name=None, tonnage=None,
     with get_db() as conn:
         conn.execute(f"UPDATE shipments SET {', '.join(fields)} WHERE id=?", values)
         if touched: touch_client(touched, conn=conn)
+    _invalidate_stats_cache()
 
 
 def delete_shipment(shipment_id):
     with get_db() as conn:
         conn.execute("DELETE FROM shipments WHERE id=?", (shipment_id,))
+    _invalidate_stats_cache()
 
 
 def delete_shipments_period(start_iso, end_iso):
@@ -227,6 +289,7 @@ def delete_shipments_period(start_iso, end_iso):
             WHERE shipment_date BETWEEN ? AND ?""",
             (start_iso, end_iso))
         return cur.rowcount
+    _invalidate_stats_cache()
 
 
 def count_shipments_period(start_iso, end_iso):
@@ -264,38 +327,101 @@ def get_shipments_by_client(client_name, limit=1000):
         return [dict(r) for r in rows]
 
 
+# ─────────── ОПТИМИЗИРОВАННАЯ СТАТИСТИКА ───────────
+
+_stats_cache = {}
+_stats_cache_lock = threading.Lock()
+
+
+def _invalidate_stats_cache():
+    with _stats_cache_lock:
+        _stats_cache.clear()
+
+
 def stats_for_period(start, end):
-    shipments = get_shipments_by_period(start, end)
-    by_client, by_day = {}, {}
-    total_t = 0.0
-    for s in shipments:
-        total_t += s['tonnage']
-        c = by_client.setdefault(s['client_name'],
-                                 {'tonnage': 0.0, 'trucks': 0.0, 'count': 0})
-        c['tonnage'] += s['tonnage']
-        c['count'] += 1
-        d = by_day.setdefault(s['shipment_date'],
-                              {'tonnage': 0.0, 'trucks': 0.0, 'count': 0})
-        d['tonnage'] += s['tonnage']
-        d['count'] += 1
-    total_trucks = round(total_t / TRUCK_CAPACITY, 2)
-    for c in by_client.values():
-        c['trucks'] = round(c['tonnage'] / TRUCK_CAPACITY, 2)
-    for d in by_day.values():
-        d['trucks'] = round(d['tonnage'] / TRUCK_CAPACITY, 2)
-    return {'count': len(shipments), 'total_tonnage': total_t,
-            'total_trucks': total_trucks, 'by_client': by_client, 'by_day': by_day}
+    """Агрегация в SQL + кэш на 60 секунд."""
+    if isinstance(start, date): start = start.isoformat()
+    if isinstance(end, date): end = end.isoformat()
+    key = (start, end)
+    now = time.time()
+
+    with _stats_cache_lock:
+        cached = _stats_cache.get(key)
+        if cached and now - cached[1] < STATS_CACHE_SECONDS:
+            return cached[0]
+
+    with get_db() as conn:
+        total_row = conn.execute("""
+            SELECT SUM(tonnage) as total_t, COUNT(*) as cnt
+            FROM shipments WHERE shipment_date BETWEEN ? AND ?
+        """, (start, end)).fetchone()
+
+        total_t = total_row['total_t'] or 0.0
+        cnt = total_row['cnt'] or 0
+
+        by_client = {}
+        for r in conn.execute("""
+            SELECT client_name,
+                   SUM(tonnage) as tonnage,
+                   COUNT(*) as cnt
+            FROM shipments WHERE shipment_date BETWEEN ? AND ?
+            GROUP BY client_name
+        """, (start, end)).fetchall():
+            t = r['tonnage']
+            by_client[r['client_name']] = {
+                'tonnage': t,
+                'trucks': round(t / TRUCK_CAPACITY, 2),
+                'count': r['cnt'],
+            }
+
+        by_day = {}
+        for r in conn.execute("""
+            SELECT shipment_date,
+                   SUM(tonnage) as tonnage,
+                   COUNT(*) as cnt
+            FROM shipments WHERE shipment_date BETWEEN ? AND ?
+            GROUP BY shipment_date
+        """, (start, end)).fetchall():
+            t = r['tonnage']
+            by_day[r['shipment_date']] = {
+                'tonnage': t,
+                'trucks': round(t / TRUCK_CAPACITY, 2),
+                'count': r['cnt'],
+            }
+
+    result = {
+        'count': cnt,
+        'total_tonnage': total_t,
+        'total_trucks': round(total_t / TRUCK_CAPACITY, 2),
+        'by_client': by_client,
+        'by_day': by_day,
+    }
+
+    with _stats_cache_lock:
+        _stats_cache[key] = (result, now)
+
+    return result
 
 
 def client_summary(name):
-    shipments = get_shipments_by_client(name, limit=10000)
-    if not shipments: return None
-    total_t = sum(s['tonnage'] for s in shipments)
-    return {'name': name, 'count': len(shipments), 'total_tonnage': total_t,
+    with get_db() as conn:
+        row = conn.execute("""SELECT COUNT(*) as cnt, SUM(tonnage) as total_t,
+                                     MIN(shipment_date) as first_d,
+                                     MAX(shipment_date) as last_d
+                              FROM shipments WHERE client_name=? COLLATE NOCASE""",
+                           (name,)).fetchone()
+        if not row or not row['cnt']:
+            return None
+        total_t = row['total_t'] or 0
+        return {
+            'name': name,
+            'count': row['cnt'],
+            'total_tonnage': total_t,
             'total_trucks': round(total_t / TRUCK_CAPACITY, 2),
-            'avg_tonnage': total_t / len(shipments),
-            'last_date': shipments[0]['shipment_date'],
-            'first_date': shipments[-1]['shipment_date']}
+            'avg_tonnage': total_t / row['cnt'],
+            'first_date': row['first_d'],
+            'last_date': row['last_d'],
+        }
 
 
 def week_comparison():
@@ -347,6 +473,7 @@ def restore_backup(name):
         if os.path.exists(DB_PATH):
             make_backup('before-restore')
         shutil.copy2(src, DB_PATH)
+        _invalidate_stats_cache()
         return True, None
     except Exception as e:
         return False, str(e)
@@ -730,7 +857,7 @@ if TOKEN:
         vk = vk_session.get_api()
         longpoll = VkLongPoll(vk_session)
     except Exception as e:
-        print(f"❌ Ошибка инициализации VK: {e}")
+        log.error(f"Ошибка инициализации VK: {e}")
 
 
 # ════════════════════════════ УТИЛИТЫ ════════════════════════════
@@ -742,7 +869,7 @@ def is_admin(user_id):
 
 def send(user_id, text, keyboard=None, attachment=None):
     if vk is None:
-        print("[send] VK не инициализирован"); return
+        log.warning("[send] VK не инициализирован"); return
     if len(text) > 4000:
         text = text[:3990] + "\n…(обрезано)"
     params = {'user_id': user_id, 'message': text, 'random_id': get_random_id()}
@@ -930,6 +1057,7 @@ def on_save_shipment(user_id):
         clear_state(user_id); show_main_menu(user_id); return
     sid = add_shipment(p['client'], p['tonnage'], p['date'], user_id,
                        comment=p.get('comment', ''))
+    _invalidate_stats_cache()
     s = get_shipment(sid)
     d_iso = p['date']
     clear_state(user_id)
@@ -1107,7 +1235,7 @@ def make_day_image_png(d, shipments):
 
 def show_day_image(user_id, d):
     shipments = get_shipments_by_date(d)
-    png = make_day_image_png(d, shipments)
+    png = render_locked(make_day_image_png, d, shipments)
     try:
         attach = upload_photo_bytes(user_id, png)
         total_t = sum(s['tonnage'] for s in shipments)
@@ -1123,6 +1251,15 @@ def show_day_image(user_id, d):
 
 
 # ════════════════════════════ ГРАФИКИ ════════════════════════════
+
+_render_lock = threading.Lock()
+
+
+def render_locked(fn, *args, **kwargs):
+    """Рендерит график под блокировкой — matplotlib не потокобезопасен."""
+    with _render_lock:
+        return fn(*args, **kwargs)
+
 
 def _save_fig_to_png(fig):
     buf = io.BytesIO()
@@ -1521,17 +1658,17 @@ def show_chart(user_id, chart, period):
         send(user_id, "Не понял период.", main_menu(is_admin(user_id))); return
 
     if chart == 'by_day':
-        png = make_chart_by_day_png(s, e, ptitle)
+        png = render_locked(make_chart_by_day_png, s, e, ptitle)
     elif chart == 'top_clients':
-        png = make_top_clients_png(s, e, ptitle)
+        png = render_locked(make_top_clients_png, s, e, ptitle)
     elif chart == 'top_trucks':
-        png = make_top_trucks_png(s, e, ptitle)
+        png = render_locked(make_top_trucks_png, s, e, ptitle)
     elif chart == 'pie_clients':
-        png = make_pie_clients_png(s, e, ptitle)
+        png = render_locked(make_pie_clients_png, s, e, ptitle)
     elif chart == 'weekday_avg':
-        png = make_weekday_avg_png(s, e, ptitle)
+        png = render_locked(make_weekday_avg_png, s, e, ptitle)
     elif chart == 'weekend_pie':
-        png = make_weekend_pie_png(s, e, ptitle)
+        png = render_locked(make_weekend_pie_png, s, e, ptitle)
     else:
         send(user_id, "Неизвестный график.", main_menu(is_admin(user_id))); return
     _send_chart(user_id, png, _chart_caption(chart, ptitle))
@@ -1543,17 +1680,17 @@ def show_chart_custom(user_id, chart, start_iso, end_iso):
     ptitle = f"{ru_date(s)}–{ru_date(e)}"
 
     if chart == 'by_day':
-        png = make_chart_by_day_png(s, e, ptitle)
+        png = render_locked(make_chart_by_day_png, s, e, ptitle)
     elif chart == 'top_clients':
-        png = make_top_clients_png(s, e, ptitle)
+        png = render_locked(make_top_clients_png, s, e, ptitle)
     elif chart == 'top_trucks':
-        png = make_top_trucks_png(s, e, ptitle)
+        png = render_locked(make_top_trucks_png, s, e, ptitle)
     elif chart == 'pie_clients':
-        png = make_pie_clients_png(s, e, ptitle)
+        png = render_locked(make_pie_clients_png, s, e, ptitle)
     elif chart == 'weekday_avg':
-        png = make_weekday_avg_png(s, e, ptitle)
+        png = render_locked(make_weekday_avg_png, s, e, ptitle)
     elif chart == 'weekend_pie':
-        png = make_weekend_pie_png(s, e, ptitle)
+        png = render_locked(make_weekend_pie_png, s, e, ptitle)
     else:
         png = None
     _send_chart(user_id, png, _chart_caption(chart, ptitle))
@@ -1569,24 +1706,78 @@ def show_calendar_chart(user_id, month_key):
         y, m = prev.year, prev.month
     else:
         return
-    png = make_month_heatmap_png(y, m, f"{calendar.month_name[m]} {y}")
+    png = render_locked(make_month_heatmap_png, y, m, f"{calendar.month_name[m]} {y}")
     _send_chart(user_id, png, f"📅 Календарь — {calendar.month_name[m]} {y}")
 
 
 def show_calendar_chart_custom(user_id, year, month):
-    png = make_month_heatmap_png(year, month, f"{calendar.month_name[month]} {year}")
+    png = render_locked(make_month_heatmap_png, year, month,
+                        f"{calendar.month_name[month]} {year}")
     _send_chart(user_id, png, f"📅 Календарь — {calendar.month_name[month]} {year}")
 
 
-# ════════════════════════════ ЗАГРУЗКА В ВК (С 3 ПОПЫТКАМИ) ════════════════════════════
+# ════════════════════════════ ЗАГРУЗКА В ВК ════════════════════════════
+
+def _vk_upload(user_id, kind, file_bytes, filename, mime):
+    """
+    Универсальная загрузка в ВК с 3 попытками.
+    kind = 'photo' | 'doc'
+    """
+    last_error = None
+
+    for attempt in range(1, 4):
+        try:
+            if kind == 'photo':
+                url = vk.photos.getMessagesUploadServer(peer_id=user_id)['upload_url']
+                field = 'photo'
+            else:
+                url = vk.docs.getMessagesUploadServer(type='doc', peer_id=user_id)['upload_url']
+                field = 'file'
+
+            files = {field: (filename, file_bytes, mime)}
+            r = requests.post(url, files=files, timeout=90,
+                              headers={'User-Agent': 'VKAndroidApp/5.52-4543'})
+            log.info(f"[upload_{kind}] попытка {attempt}: "
+                     f"status={r.status_code}, body={r.text[:200]}")
+
+            if r.status_code == 200 and r.text.strip():
+                uploaded = r.json()
+                if uploaded.get(field):
+                    if kind == 'photo':
+                        saved = vk.photos.saveMessagesPhoto(
+                            photo=uploaded['photo'],
+                            server=uploaded['server'],
+                            hash=uploaded['hash'])
+                        if saved and saved[0].get('id'):
+                            log.info(f"[upload_photo] успех с попытки {attempt}")
+                            return f"photo{saved[0]['owner_id']}_{saved[0]['id']}"
+                    else:
+                        saved = vk.docs.save(file=uploaded['file'], title=filename)
+                        if isinstance(saved, dict) and 'doc' in saved:
+                            doc_info = saved['doc']
+                        elif isinstance(saved, dict) and saved.get('id'):
+                            doc_info = saved
+                        else:
+                            last_error = f"docs.save unexpected: {saved}"
+                            continue
+                        return f"doc{doc_info['owner_id']}_{doc_info['id']}"
+                last_error = f"Ответ без {field}: {uploaded}"
+            else:
+                last_error = f"HTTP {r.status_code}: {r.text[:100]}"
+
+            if attempt < 3:
+                time.sleep(3)
+        except Exception as e:
+            last_error = str(e)
+            log.warning(f"[upload_{kind}] попытка {attempt} упала: {e}")
+            if attempt < 3:
+                time.sleep(3)
+
+    raise RuntimeError(f"Не удалось за 3 попытки. Последняя ошибка: {last_error}")
+
 
 def upload_photo_bytes(user_id, photo_bytes):
-    """
-    Загружает фото в ВК через requests.
-    Уменьшение до 800 px, quality=70, с 3 попытками при 5xx.
-    """
-    # 1. Конвертация и уменьшение
-    jpg_bytes = photo_bytes
+    """Сжимает PNG → JPEG (800px, q=70) и загружает в ВК."""
     try:
         from PIL import Image
         img = Image.open(io.BytesIO(photo_bytes))
@@ -1598,95 +1789,17 @@ def upload_photo_bytes(user_id, photo_bytes):
         jpg_buf = io.BytesIO()
         img.save(jpg_buf, 'JPEG', quality=70, optimize=True)
         jpg_bytes = jpg_buf.getvalue()
-        print(f"[upload_photo] JPEG: {img.size}, {len(jpg_bytes)} bytes")
+        log.info(f"[upload_photo] JPEG: {img.size}, {len(jpg_bytes)} bytes")
     except Exception as e:
-        print(f"[upload_photo] PIL failed: {e}")
-        traceback.print_exc()
+        log.warning(f"[upload_photo] PIL failed: {e}")
+        jpg_bytes = photo_bytes
 
-    # 2. Сервер загрузки
-    try:
-        server_resp = vk.photos.getMessagesUploadServer(peer_id=user_id)
-        upload_url = server_resp['upload_url']
-        print(f"[upload_photo] upload_url получен")
-    except Exception as e:
-        print(f"[upload_photo] getMessagesUploadServer failed: {e}")
-        traceback.print_exc()
-        raise
-
-    # 3. Отправка multipart с 3 попытками
-    last_error = None
-    for attempt in range(1, 4):
-        try:
-            files = {'photo': ('photo.jpg', jpg_bytes)}
-            r = requests.post(upload_url, files=files, timeout=90,
-                              headers={'User-Agent': 'VKAndroidApp/5.52-4543'})
-            print(f"[upload_photo] попытка {attempt}: "
-                  f"status={r.status_code}, body={r.text[:200]}")
-
-            if r.status_code == 200 and r.text.strip():
-                uploaded = r.json()
-                if uploaded.get('photo'):
-                    # 4. Сохранение
-                    photo_list = vk.photos.saveMessagesPhoto(
-                        photo=uploaded['photo'],
-                        server=uploaded['server'],
-                        hash=uploaded['hash'])
-                    if photo_list and photo_list[0].get('id'):
-                        print(f"[upload_photo] успех с попытки {attempt}")
-                        return f"photo{photo_list[0]['owner_id']}_{photo_list[0]['id']}"
-                last_error = f"Ответ без photo: {uploaded}"
-            else:
-                last_error = f"HTTP {r.status_code}: {r.text[:100]}"
-
-            if attempt < 3:
-                print(f"[upload_photo] повтор через 3 сек...")
-                time.sleep(3)
-
-        except Exception as e:
-            last_error = str(e)
-            print(f"[upload_photo] попытка {attempt} упала: {e}")
-            if attempt < 3:
-                time.sleep(3)
-
-    raise RuntimeError(f"Не удалось за 3 попытки. Последняя ошибка: {last_error}")
+    return _vk_upload(user_id, 'photo', jpg_bytes, 'photo.jpg', 'image/jpeg')
 
 
 def upload_csv_doc(user_id, data, filename):
-    """Загружает документ в ВК через прямой API с 3 попытками."""
-    last_error = None
-    for attempt in range(1, 4):
-        try:
-            server_resp = vk.docs.getMessagesUploadServer(type='doc', peer_id=user_id)
-            upload_url = server_resp['upload_url']
-
-            files = {'file': (filename, data, 'application/octet-stream')}
-            r = requests.post(upload_url, files=files, timeout=120)
-            print(f"[upload_doc] попытка {attempt}: "
-                  f"status={r.status_code}, body={r.text[:200]}")
-
-            if r.status_code == 200 and r.text.strip():
-                uploaded = r.json()
-                if uploaded.get('file'):
-                    saved = vk.docs.save(file=uploaded['file'], title=filename)
-                    if isinstance(saved, dict) and 'doc' in saved:
-                        doc_info = saved['doc']
-                    elif isinstance(saved, dict) and saved.get('id'):
-                        doc_info = saved
-                    else:
-                        last_error = f"docs.save unexpected: {saved}"
-                        continue
-                    return f"doc{doc_info['owner_id']}_{doc_info['id']}"
-            last_error = f"HTTP {r.status_code}: {r.text[:100]}"
-
-            if attempt < 3:
-                time.sleep(3)
-
-        except Exception as e:
-            last_error = str(e)
-            if attempt < 3:
-                time.sleep(3)
-
-    raise RuntimeError(f"Не удалось за 3 попытки. Последняя ошибка: {last_error}")
+    """Загружает документ в ВК (для CSV и .db)."""
+    return _vk_upload(user_id, 'doc', data, filename, 'application/octet-stream')
 
 
 def on_export_csv(user_id, days=30):
@@ -1845,7 +1958,7 @@ def handle_payload(user_id, payload):
         if chart == 'calendar':
             send(user_id, "📅 Выберите месяц:", chart_calendar_menu())
         elif chart == 'week_compare':
-            png = make_week_compare_png()
+            png = render_locked(make_week_compare_png)
             _send_chart(user_id, png, "📈 Сравнение недель")
         elif chart == 'client_trend':
             clients = get_clients()
@@ -1879,7 +1992,7 @@ def handle_payload(user_id, payload):
         c = get_client(cid)
         if not c:
             send(user_id, "❌ Клиент не найден.", main_menu(is_admin(user_id))); return
-        png = make_client_trend_png(c['name'])
+        png = render_locked(make_client_trend_png, c['name'])
         _send_chart(user_id, png, f"📈 Тренд: {c['name'][:60]}")
 
     elif cmd == 'chart_clients_page':
@@ -2133,7 +2246,7 @@ def handle_payload(user_id, payload):
         c = get_client(payload.get('cid'))
         if not c:
             send(user_id, "❌ Клиент не найден.", main_menu(is_admin(user_id))); return
-        png = make_client_trend_png(c['name'])
+        png = render_locked(make_client_trend_png, c['name'])
         _send_chart(user_id, png, f"📈 Тренд: {c['name'][:60]}")
 
     elif cmd == 'week_compare':
@@ -2222,6 +2335,7 @@ def handle_text(user_id, text):
             send(user_id, "❌ Слишком короткий текст.", cancel_menu()); return
         imported, skipped, errors = import_from_text(user_id, text)
         clear_state(user_id)
+        _invalidate_stats_cache()
         result = [f"✍️ Импорт завершён:", f"• Добавлено: {imported}"]
         if skipped: result.append(f"• Пропущено: {skipped}")
         if errors:
@@ -2408,18 +2522,29 @@ def morning_report_loop():
                     and n.minute >= MORNING_REPORT_MINUTE
                     and _morning_last_day != today_key):
                 _morning_last_day = today_key
+                shipments = get_shipments_by_date(n.date())
+
+                # Рендерим и загружаем картинку ОДИН раз
+                png = None
+                attach = None
+                try:
+                    png = render_locked(make_day_image_png, n.date(), shipments)
+                    # Используем ID любого пользователя для загрузки
+                    users = get_all_users()
+                    if users:
+                        attach = upload_photo_bytes(users[0]['user_id'], png)
+                except Exception:
+                    traceback.print_exc()
+
                 for u in get_all_users():
                     if not u.get('morning_report'): continue
                     uid = u['user_id']
                     try:
-                        shipments = get_shipments_by_date(n.date())
                         text = format_day_shipments(
                             n.date(), shipments,
                             f"🌅 Доброе утро! Погрузки на сегодня ({ru_date(n.date())}):")
                         send(uid, text, main_menu(is_admin(uid)))
-                        try:
-                            png = make_day_image_png(n.date(), shipments)
-                            attach = upload_photo_bytes(uid, png)
+                        if attach:
                             total_t = sum(s['tonnage'] for s in shipments)
                             total_trucks = round(total_t / TRUCK_CAPACITY, 2)
                             caption = (f"🖼 Сводка А4 на {ru_date(n.date())}\n"
@@ -2427,7 +2552,6 @@ def morning_report_loop():
                                        f"{fmt_num(total_trucks)} фур")
                             send(uid, caption, main_menu(is_admin(uid)),
                                  attachment=attach)
-                        except Exception: traceback.print_exc()
                     except Exception: traceback.print_exc()
         except Exception: traceback.print_exc()
         time.sleep(60)
@@ -2447,9 +2571,24 @@ def backup_loop():
                     and _backup_last_day != today_key):
                 path = make_backup('auto')
                 _backup_last_day = today_key
-                if path: print(f"[backup] saved: {path} at {n}")
+                if path: log.info(f"[backup] saved: {path} at {n}")
         except Exception: traceback.print_exc()
         time.sleep(60)
+
+
+_states_cleanup_last = 0
+
+
+def states_cleanup_loop():
+    global _states_cleanup_last
+    while True:
+        try:
+            now = time.time()
+            if now - _states_cleanup_last > 600:
+                cleanup_states()
+                _states_cleanup_last = now
+        except Exception: traceback.print_exc()
+        time.sleep(300)
 
 
 def _run_keepalive_server():
@@ -2463,10 +2602,10 @@ def _run_keepalive_server():
         def log_message(self, *args): pass
     try:
         server = HTTPServer(('0.0.0.0', port), Handler)
-        print(f"[keepalive] listening on port {port}")
+        log.info(f"[keepalive] listening on port {port}")
         server.serve_forever()
     except Exception as e:
-        print(f"[keepalive] error: {e}")
+        log.error(f"[keepalive] error: {e}")
 
 
 def _extract_payload(event):
@@ -2525,17 +2664,259 @@ def _collect_docs_for_import(event, user_id):
     return docs
 
 
+# ════════════════════════════ ИМПОРТ ════════════════════════════
+
+def _split_line(line):
+    if '\t' in line: return [p.strip() for p in line.split('\t')]
+    if '|' in line: return [p.strip() for p in line.split('|')]
+    if ';' in line: return [p.strip() for p in line.split(';')]
+    if ',' in line: return [p.strip() for p in line.split(',')]
+    parts = re.split(r'\s{2,}', line)
+    if len(parts) >= 3: return [p.strip() for p in parts]
+    return [p.strip() for p in line.split()]
+
+
+def import_from_text(user_id, text):
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines: return 0, 0, ["Пустое сообщение"]
+    first_low = lines[0].lower()
+    has_header = ('клиент' in first_low or 'контрагент' in first_low or
+                  'дата' in first_low or 'тонн' in first_low)
+    imported = skipped = 0
+    errors = []
+    start_idx = 1 if has_header else 0
+    for rn, line in enumerate(lines[start_idx:], start=start_idx + 1):
+        try:
+            parts = _split_line(line)
+            if len(parts) < 3:
+                errors.append(f"Строка {rn}: нужно 3 колонки"); skipped += 1; continue
+            client = parts[0].strip()
+            date_str = parts[1].strip()
+            tonnage_str = parts[2].strip().replace(',', '.').replace(' ', '')
+            if not client or not tonnage_str:
+                skipped += 1; continue
+            d = parse_month_or_date(date_str)
+            if not d:
+                errors.append(f"Строка {rn}: не понял дату '{date_str}'"); skipped += 1; continue
+            tonnage = float(tonnage_str)
+            if tonnage <= 0: raise ValueError("тоннаж <= 0")
+            add_shipment(client, tonnage, d.isoformat(), user_id, comment='импорт')
+            imported += 1
+        except Exception as e:
+            errors.append(f"Строка {rn}: {e}"); skipped += 1
+    return imported, skipped, errors
+
+
+def _import_simple_rows(user_id, rows):
+    if not rows or len(rows) < 2:
+        return 0, 0, ["Нужна хотя бы одна строка данных"]
+    header = [str(h or '').strip().lower() for h in rows[0]]
+    idx_client = idx_date = idx_tonnage = None
+    for i, h in enumerate(header):
+        if idx_client is None and ('клиент' in h or 'контрагент' in h or
+                                    'наименование' in h or h == 'client'):
+            idx_client = i
+        elif idx_date is None and ('дата' in h or 'месяц' in h or
+                                    'период' in h or h in ('date', 'month')):
+            idx_date = i
+        elif idx_tonnage is None and ('тонн' in h or 'вес' in h or
+                                       'масса' in h or h in ('tonnage', 'weight')):
+            idx_tonnage = i
+    if idx_client is None or idx_date is None or idx_tonnage is None:
+        if len(header) >= 3:
+            idx_client, idx_date, idx_tonnage = 0, 1, 2
+        else:
+            return 0, 0, ["Не удалось определить колонки"]
+    imported = skipped = 0
+    errors = []
+    for rn, r in enumerate(rows[1:], start=2):
+        try:
+            if r is None or len(r) <= max(idx_client, idx_date, idx_tonnage):
+                skipped += 1; continue
+            def _cell(v):
+                if v is None: return ''
+                if isinstance(v, datetime): return v
+                return str(v).strip()
+            client = _cell(r[idx_client])
+            date_raw = r[idx_date]
+            tonnage_raw = _cell(r[idx_tonnage]).replace(',', '.').replace(' ', '')
+            if not client or tonnage_raw == '':
+                skipped += 1; continue
+            if isinstance(date_raw, datetime): d = date_raw.date()
+            elif isinstance(date_raw, date): d = date_raw
+            else: d = parse_month_or_date(_cell(date_raw))
+            if not d:
+                errors.append(f"Строка {rn}: не понял дату"); skipped += 1; continue
+            tonnage = float(tonnage_raw)
+            if tonnage <= 0: raise ValueError("тоннаж <= 0")
+            add_shipment(client, tonnage, d.isoformat(), user_id, comment='импорт')
+            imported += 1
+        except Exception as e:
+            errors.append(f"Строка {rn}: {e}"); skipped += 1
+    return imported, skipped, errors
+
+
+def import_1c_data(user_id, rows):
+    n = len(rows)
+    imported = skipped = 0
+    errors = []
+    samples = []
+
+    service_prefixes = (
+        'выполнение сборки', 'параметры', 'отбор',
+        'склад', 'получатель', 'регистратор', 'артикул', 'итого',
+    )
+
+    for idx, row in enumerate(rows):
+        rn = idx + 1
+        try:
+            if not row: continue
+            r = list(row)
+            if len(r) < 8: r = r + [None] * (8 - len(r))
+            a = r[0]
+            h = r[7] if len(r) > 7 else None
+
+            a_str = str(a).strip() if a is not None else ''
+            if not a_str: continue
+            a_low = a_str.lower()
+
+            if any(a_low.startswith(p) for p in service_prefixes): continue
+            if 'расходный ордер' in a_low: continue
+            if a_low.startswith('акт с/м'): continue
+            if a_str.replace('.', '').replace(',', '').replace(' ', '').isdigit():
+                continue
+
+            weight_cell = h
+            if weight_cell is None or str(weight_cell).strip() == '':
+                for cell in reversed(r):
+                    if cell is None: continue
+                    s = str(cell).replace(',', '.').replace(' ', '').strip()
+                    if s and NUM_RE.match(s):
+                        weight_cell = cell; break
+
+            if weight_cell is None: skipped += 1; continue
+            g_str = str(weight_cell).replace(',', '.').replace(' ', '').strip()
+            if not g_str: skipped += 1; continue
+            try: weight_kg = float(g_str)
+            except ValueError: skipped += 1; continue
+            if weight_kg <= 0: skipped += 1; continue
+            weight_t = round(weight_kg / 1000.0, 3)
+
+            shipment_date = None
+            j = idx + 1
+            while j < n:
+                rj = rows[j]
+                if not rj: j += 1; continue
+                aj = str(rj[0]).strip() if rj[0] is not None else ''
+                aj_low = aj.lower()
+                if 'расходный ордер' in aj_low:
+                    m = DATE_RE.search(aj)
+                    if m:
+                        try:
+                            shipment_date = datetime.strptime(
+                                m.group(1), '%d.%m.%Y').date()
+                        except ValueError: pass
+                    break
+                if aj and not aj.replace('.', '').replace(',', '').replace(' ', '').isdigit():
+                    if not any(aj_low.startswith(p) for p in service_prefixes):
+                        if 'расходный ордер' not in aj_low and not aj_low.startswith('акт с/м'):
+                            break
+                j += 1
+
+            if not shipment_date:
+                shipment_date = tz_today()
+
+            add_shipment(a_str, weight_t, shipment_date.isoformat(),
+                         user_id, comment='1С')
+            if len(samples) < 15:
+                samples.append(f"{a_str[:55]} | {shipment_date.isoformat()} | "
+                               f"{weight_kg} кг → {weight_t} т")
+            imported += 1
+        except Exception as e:
+            errors.append(f"Строка {rn}: {e}"); skipped += 1
+
+    if samples:
+        try:
+            send(user_id, "📋 Примеры импортированных:\n" +
+                 "\n".join(f"• {s}" for s in samples))
+        except Exception: traceback.print_exc()
+    return imported, skipped, errors
+
+
+def import_csv_data(user_id, data_bytes, filename=''):
+    name = (filename or '').lower()
+    if name.endswith('.xlsx') or name.endswith('.xlsm'):
+        try:
+            from openpyxl import load_workbook
+        except ImportError:
+            return 0, 0, ["Библиотека openpyxl не установлена"]
+        try:
+            # read_only=True экономит память в 5-10 раз
+            wb = load_workbook(io.BytesIO(data_bytes), data_only=True, read_only=True)
+            ws = wb.active
+            rows = []
+            for r in ws.iter_rows(values_only=True):
+                rows.append(list(r))
+                if len(rows) > 60000:  # защита от гигантских файлов
+                    break
+            wb.close()
+        except Exception as e:
+            return 0, 0, [f"Не удалось прочитать Excel: {e}"]
+        for r in rows[:300]:
+            if r and r[0] and 'расходный ордер' in str(r[0]).lower():
+                return import_1c_data(user_id, rows)
+        return _import_simple_rows(user_id, rows)
+    return 0, 0, ["Неподдерживаемый формат файла"]
+
+
+def handle_csv_attachment(user_id, attachments):
+    try: make_backup('before-import')
+    except Exception: traceback.print_exc()
+
+    for att in attachments:
+        if att.get('type') != 'doc': continue
+        doc = att.get('doc') or {}
+        url = doc.get('url')
+        filename = doc.get('title', '')
+        if not url: continue
+        send(user_id, f"📥 Скачиваю файл: {filename}")
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                data = resp.read()
+        except Exception as e:
+            send(user_id, f"❌ Не удалось скачать файл: {e}")
+            clear_state(user_id); return
+        send(user_id, "⚙️ Обрабатываю файл (может занять до минуты)...")
+        imported, skipped, errors = import_csv_data(user_id, data, filename)
+        _invalidate_stats_cache()
+        clear_state(user_id)
+        result = [f"📥 Импорт завершён:", f"• Добавлено: {imported}"]
+        if skipped: result.append(f"• Пропущено: {skipped}")
+        if errors:
+            result.append(""); result.append("Примеры ошибок:")
+            result.extend(errors[:5])
+        result.append(""); result.append("Проверьте: 📊 Статистика → Этот год")
+        send(user_id, "\n".join(result), admin_menu())
+        return
+    send(user_id, "❌ Во вложении не найден файл.", admin_menu())
+    clear_state(user_id)
+
+
+# ════════════════════════════ MAIN ════════════════════════════
+
 def main():
-    print(f"[bot] starting at {tz_now()} (UTC+{TIMEZONE_OFFSET_HOURS})")
-    if not TOKEN: print("❌ VK_TOKEN не задан."); return
-    if not GROUP_ID: print("❌ VK_GROUP_ID не задан."); return
-    if longpoll is None: print("❌ Long Poll не инициализирован."); return
+    log.info(f"[bot] starting at {tz_now()} (UTC+{TIMEZONE_OFFSET_HOURS})")
+    if not TOKEN: log.error("❌ VK_TOKEN не задан."); return
+    if not GROUP_ID: log.error("❌ VK_GROUP_ID не задан."); return
+    if longpoll is None: log.error("❌ Long Poll не инициализирован."); return
 
     threading.Thread(target=_run_keepalive_server, daemon=True).start()
     threading.Thread(target=morning_report_loop, daemon=True).start()
     threading.Thread(target=backup_loop, daemon=True).start()
+    threading.Thread(target=states_cleanup_loop, daemon=True).start()
 
-    print("[bot] listening for events...")
+    log.info("[bot] listening for events...")
     for event in longpoll.listen():
         if event.type == VkEventType.MESSAGE_NEW and event.to_me:
             user_id = event.user_id
