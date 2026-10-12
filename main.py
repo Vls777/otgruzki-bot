@@ -1766,12 +1766,12 @@ def _vk_upload(user_id, kind, file_bytes, filename, mime):
                 last_error = f"HTTP {r.status_code}: {r.text[:100]}"
 
             if attempt < 3:
-                time.sleep(3)
+                time.sleep(10)
         except Exception as e:
             last_error = str(e)
             log.warning(f"[upload_{kind}] попытка {attempt} упала: {e}")
             if attempt < 3:
-                time.sleep(3)
+                time.sleep(10)
 
     raise RuntimeError(f"Не удалось за 3 попытки. Последняя ошибка: {last_error}")
 
